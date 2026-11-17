@@ -20,6 +20,6 @@
   (mascot "the duck")
   (logo "duck yellow")
   (accent 46 100 40)
-  (rows "., .," "{O=O}" "(sql)" " \" \"")
-  (roles "ii ii" "ieafi" "iaaai" " i i ")
+  (rows "., .," "{O,O}" "(sql)" " \" \"")
+  (roles "ii ii" "ieifi" "iaaai" " i i ")
   (reference "SELECT '{O,O}' AS owl;"))
