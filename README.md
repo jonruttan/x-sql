@@ -51,9 +51,16 @@ What is built:
   `ALL`; `HAVING`.
 - **Results.** DuckDB's box, a column as wide as its widest text in
   terminal cells, headed by the alias, the column's name, or the
-  expression spelled out.
-- **The prompt.** A statement ends at a semicolon and may span lines;
-  `.help`, `.tables` and `.quit`.
+  expression spelled out. On a terminal the box and the types are dim,
+  the names bold and a NULL dim.
+- **The prompt.** A statement ends at a semicolon and may span lines.
+  A line is coloured as it is typed, by the grammar `sql/syntax.x`, in
+  the colours of x-lang's theme; brackets take their depth's colour and
+  the pair beside the cursor is inverse. Tab completes a keyword, a
+  type, a function, a table or a column. `.help` and `.help TOPIC`,
+  `.tables`, `.schema [table]` and `.quit`.
+- **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
+  `.sql` file with it.
 
 Anything else is refused by name (`Not implemented Error: UNION`) and not
 answered differently.
@@ -67,8 +74,8 @@ In this order:
    remaining types: REAL, the small integers, dates and times.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
    and structs, reading CSV and JSON files by name.
-4. The prompt: statement colouring as it is typed, coloured results,
-   completion, a `.help` for every statement and function, paging.
+4. The prompt: coloured values in a result, paging a long one, a help
+   topic for every function, `-f FILE` and statements on standard input.
 5. Other servers behind the same prompt: PostgreSQL's wire protocol, and
    MySQL's, which MariaDB also speaks.
 

@@ -42,6 +42,9 @@
     (List sort (fn (_ a b) (Str8 <? a b))
                (List map first (%sql-tables vals)))))
 
+; The columns of a table, each (NAME TYPE)
+(def sql-table-columns (fn (_ name) (List second (%sql-table name))))
+
 ; --- FROM --------------------------------------------------------------------
 
 ; What FROM reads is (COLUMNS . ROWS): COLUMNS a list of
@@ -468,4 +471,4 @@
 (def sql-execute
   (fn (_ stmt) ((class-static-ref SqlStatement (first stmt)) SqlStatement stmt)))
 
-(provide sql/exec sql-execute sql-table-names)
+(provide sql/exec sql-execute sql-table-names sql-table-columns)
