@@ -91,6 +91,22 @@
             "own tables has is the outer statement's.")
       (list "SELECT a, (SELECT count(*) FROM u WHERE u.a > t.a) FROM t;"
             "WITH big AS (SELECT * FROM t WHERE a > 1) SELECT count(*) FROM big;"))
+    (list "files" "CSV and JSON files as tables, and tables as files."
+      (list "FROM 'people.csv'               a file's name is a table"
+            "FROM 'people.json'              an array of objects, or an object a line"
+            "read_csv('file')  read_json('file')    the same, whatever the name ends in"
+            "COPY table TO 'file' [(FORMAT csv | json, HEADER [true | false])]"
+            "COPY (SELECT ...) TO 'file'"
+            "COPY table FROM 'file'"
+            "A CSV's first row names its columns when it is all text.  A"
+            "column's type is found from its values: whole numbers a BIGINT,"
+            "a fraction a DOUBLE, true and false a BOOLEAN, dates a DATE, times"
+            "a TIMESTAMP, anything else text.  An empty field and a null are"
+            "NULL.  A file's columns are qualified by its name without its"
+            "ending, or by an alias.  A name ending .json, .ndjson or .jsonl is"
+            "JSON, any other CSV, with commas.")
+      (list "SELECT name, score FROM 'people.csv' WHERE active ORDER BY score DESC;"
+            "COPY (SELECT * FROM t WHERE a > 1) TO 'out.json';"))
     (list "drop" "A table gone."
       (list "DROP TABLE [IF EXISTS] name")
       (list "DROP TABLE IF EXISTS t;"))
