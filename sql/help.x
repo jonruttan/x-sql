@@ -74,6 +74,29 @@
             "A constant: 42 is the narrowest integer that holds it, 1.50 a"
             "DECIMAL(3,2), 1e3 a DOUBLE, 'text' a VARCHAR.")
       (list "SELECT 42, 1.50, 1e3, 'text', true, NULL;"))
+    (list "conditions" "Choosing by a condition, and testing a value against others."
+      (list "CASE WHEN condition THEN value ... [ELSE value] END"
+            "CASE value WHEN other THEN value ... [ELSE value] END"
+            "value [NOT] IN (value, ...)"
+            "value [NOT] BETWEEN low AND high        both ends count"
+            "text [NOT] LIKE pattern                 % any run, _ any one character"
+            "text [NOT] ILIKE pattern                the same, whatever the case")
+      (list "SELECT CASE WHEN a < 3 THEN 'low' ELSE 'high' END FROM t;"
+            "SELECT * FROM t WHERE a IN (1, 3) OR b LIKE '%an%';"))
+    (list "functions" "The functions of one row's values."
+      (list "Text:    lower upper length trim ltrim rtrim reverse"
+            "         substring(text, start [, count])   substr is the same"
+            "         left(text, n)  right(text, n)  repeat(text, n)"
+            "         replace(text, from, to)  concat(value, ...)"
+            "         starts_with(text, prefix)  contains(text, part)"
+            "Numbers: abs floor ceil round sqrt power(x, y)"
+            "Choices: coalesce(value, ...)  ifnull(a, b)  nullif(a, b)"
+            "         greatest(value, ...)  least(value, ...)  typeof(value)"
+            "Text is counted in characters.  A NULL argument answers NULL, but"
+            "for concat, coalesce, greatest and least, which leave NULLs out."
+            "For the functions of a group of rows, see .help group.")
+      (list "SELECT upper(left(b, 1)) || substring(b, 2), length(b) FROM t;"
+            "SELECT coalesce(a, 0), round(avg(a)) FROM t GROUP BY ALL;"))
     (list "cast" "A value as another type."
       (list "CAST(expression AS type)"
             "expression::type"
