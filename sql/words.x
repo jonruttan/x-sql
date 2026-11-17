@@ -36,4 +36,17 @@
         (list "<" (lit lt) "<") (list "<=" (lit le) "<=")
         (list ">" (lit gt) ">") (list ">=" (lit ge) ">=")))
 
-(provide sql/words sql-reserved sql-ops sql-binary-ops)
+; A column type as written, upper case, and the type it names
+(def sql-type-words
+  (list (list "INTEGER" (lit integer)) (list "INT" (lit integer))
+        (list "INT4" (lit integer)) (list "SIGNED" (lit integer))
+        (list "BIGINT" (lit bigint)) (list "INT8" (lit bigint))
+        (list "LONG" (lit bigint))
+        (list "HUGEINT" (lit hugeint))
+        (list "VARCHAR" (lit varchar)) (list "TEXT" (lit varchar))
+        (list "STRING" (lit varchar)) (list "CHAR" (lit varchar))
+        (list "BPCHAR" (lit varchar))
+        (list "BOOLEAN" (lit boolean)) (list "BOOL" (lit boolean))
+        (list "LOGICAL" (lit boolean))))
+
+(provide sql/words sql-reserved sql-ops sql-binary-ops sql-type-words)

@@ -47,11 +47,11 @@ Parser Error: unterminated string literal
 ### a statement that is not built
 
 ```x
-(sql "DROP TABLE t")
+(sql "UPDATE t SET a = 1")
 ```
 ---
 ```output
-Parser Error: syntax error at or near "DROP"
+Parser Error: syntax error at or near "UPDATE"
 ```
 
 ### an expression that stops short
@@ -92,14 +92,24 @@ Binder Error: Referenced column "a" was not found because the FROM clause is mis
 
 ## errors not built
 
-### FROM
+### GROUP BY
 
 ```x
-(sql "SELECT 1 FROM t")
+(sql "SELECT 1 GROUP BY 1")
 ```
 ---
 ```output
-Not implemented Error: FROM
+Not implemented Error: GROUP
+```
+
+### DISTINCT
+
+```x
+(sql "SELECT DISTINCT 1")
+```
+---
+```output
+Not implemented Error: DISTINCT
 ```
 
 ### a comparison across types

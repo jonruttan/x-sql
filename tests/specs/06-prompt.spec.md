@@ -69,13 +69,25 @@ Parser Error: syntax error at or near "2"
 ```output
 A statement ends with a semicolon and may span lines.
   .help    this text
+  .tables  the tables there are
   .quit    leave (.exit and ctrl-d do the same)
 ```
 
 ### a command it does not have is named
 
 ```x
-(sql-eval-line ".tables")
+(sql-eval-line ".schema")
 ```
 ---
-    unknown command: .tables; try .help
+    unknown command: .schema; try .help
+
+### .tables names the tables, in order
+
+```x
+(%seq (sql-eval-line "CREATE OR REPLACE TABLE zebra (a INT); CREATE OR REPLACE TABLE ant (a INT);") (sql-eval-line ".tables"))
+```
+---
+```output
+ant
+zebra
+```

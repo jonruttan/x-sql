@@ -21,31 +21,39 @@ its way of showing a result.
 Pre-release: no release has been cut. Paired with x-lang v0.55.0
 (`lang.xon` is the checkable row).
 
-This is the first slice: the reader, the parser, and a `SELECT` of
-expressions with no `FROM`.
+What is built:
 
 - **Values.** INTEGER, BIGINT and HUGEINT, each constant the narrowest
   type that holds it; VARCHAR; BOOLEAN; NULL.
 - **Operators.** `+ - * // %` on integers, in the wider operand's type,
   an overflow an error; `= == <> != < <= > >=`; `AND OR NOT` in three
   values; `IS [NOT] NULL`; `||`.
+- **Tables.** In memory, for the life of the process: `CREATE [OR
+  REPLACE] TABLE [IF NOT EXISTS]`, `INSERT INTO ... VALUES` with or
+  without a column list, `DROP TABLE [IF EXISTS]`. A value is cast to its
+  column's type as it goes in.
+- **Queries.** `SELECT` over one table: `*` and `t.*`, table aliases,
+  `WHERE`, `ORDER BY` with `ASC`, `DESC` and `NULLS FIRST` or `LAST`,
+  `LIMIT` and `OFFSET`; and DuckDB's order, `FROM t` alone or
+  `FROM t SELECT ...`.
 - **Results.** DuckDB's box, a column as wide as its widest text in
-  terminal cells, headed by the alias or by the expression spelled out.
+  terminal cells, headed by the alias, the column's name, or the
+  expression spelled out.
 - **The prompt.** A statement ends at a semicolon and may span lines;
-  `.help` and `.quit`.
+  `.help`, `.tables` and `.quit`.
 
-Anything else is refused by name (`Not implemented Error: FROM`) and not
+Anything else is refused by name (`Not implemented Error: GROUP`) and not
 answered differently.
 
 ## Planned
 
 In this order:
 
-1. DOUBLE and DECIMAL, `/`, casts, and the scalar functions.
-2. Tables in memory: `CREATE TABLE`, `INSERT`, `FROM`, `WHERE`,
-   `ORDER BY`, `LIMIT`, `GROUP BY` and the aggregates, joins.
-3. DuckDB's friendlier forms: `FROM` first, `SELECT * EXCLUDE`,
-   `GROUP BY ALL`, lists and structs, reading CSV and JSON files by name.
+1. `GROUP BY` and the aggregates, `DISTINCT`, joins, subqueries,
+   `UPDATE` and `DELETE`.
+2. DOUBLE and DECIMAL, `/`, casts, and the scalar functions.
+3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
+   and structs, reading CSV and JSON files by name.
 4. The prompt: statement colouring as it is typed, coloured results,
    completion, a `.help` for every statement and function, paging.
 5. Other servers behind the same prompt: PostgreSQL's wire protocol, and
@@ -66,6 +74,8 @@ it differs and why.
   statement with a caret under the place, is not built.
 - A statement that stops short is `syntax error at end of input`; DuckDB
   names the last token it read.
+- Every row of a result is shown; DuckDB cuts a long one to forty rows.
+- A table lasts as long as the process: there is no database file.
 - A division by zero is an error, as in DuckDB 2.0, without its hint
   about `TRY` and `error_on_division_by_zero`.
 

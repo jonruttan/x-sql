@@ -10,12 +10,10 @@
 ; boolean and null, and X the x value, nil for NULL.  A NULL keeps the type
 ; of the expression it came from; the constant NULL has the type null.
 ;
-; A result is (NAMES TYPES ROWS), each row a list of values.
-;
 ; Three classes hold what is chosen by a name: SqlNode evaluates an
 ; expression by its head, SqlName spells one for a column heading, and
-; SqlOp applies a binary operator.  SqlStatement runs a statement.  The
-; name is a symbol the parser made, so the lookup is class-static-ref.
+; SqlOp applies a binary operator.  The name is a symbol the parser made,
+; so the lookup is class-static-ref.
 
 (module sql/eval)
 (import x/type/list)
@@ -191,52 +189,76 @@
 
 ; --- expressions -------------------------------------------------------------
 
+; NODE's value in SCOPE: nil where there is no FROM, else (COLUMNS . ROW),
+; COLUMNS a list of (QUALIFIER NAME TYPE) and ROW their x values.
 (def sql-eval
-  (fn (_ node) ((class-static-ref SqlNode (first node)) SqlNode node)))
+  (fn (_ node scope)
+    ((class-static-ref SqlNode (first node)) SqlNode node scope)))
+
+; The place in COLUMNS of the column NAME, QUALIFIER nil or its table's
+; name; names match in any case.  A miss is an error.
+(def sql-column-index
+  (fn (_ name qualifier columns)
+    (when (and (not (null? qualifier))
+               (null? (List find (fn (_ c) (Str8 ci=? (first c) qualifier)) columns)))
+      (error (Str8 str "Binder Error: Referenced table \"" qualifier "\" not found!")))
+    (let ((i (List find-index
+               (fn (_ c)
+                 (and (Str8 ci=? (List second c) name)
+                      (or (null? qualifier) (Str8 ci=? (first c) qualifier))))
+               columns)))
+      (if (null? i)
+        (error (Str8 str "Binder Error: Referenced column \"" name
+                         "\" not found in FROM clause!"))
+        i))))
 (def sql-expr-name
   (fn (_ node) ((class-static-ref SqlName (first node)) SqlName node)))
 
 (def-class SqlNode ()
   (static
-    (method int (self node)
+    (method int (self node scope)
       (pair (%sql-int-type (List second node)) (List second node)))
-    (method str (self node) (pair (lit varchar) (List second node)))
-    (method bool (self node) (pair (lit boolean) (List second node)))
-    (method null (self node) (pair (lit null) ()))
-    (method col (self node)
-      (error (Str8 str "Binder Error: Referenced column \"" (List second node)
-                       "\" was not found because the FROM clause is missing")))
-    (method neg (self node)
-      (let ((v (sql-eval (List second node))))
+    (method str (self node scope) (pair (lit varchar) (List second node)))
+    (method bool (self node scope) (pair (lit boolean) (List second node)))
+    (method null (self node scope) (pair (lit null) ()))
+    (method col (self node scope)
+      (if (null? scope)
+        (error (Str8 str "Binder Error: Referenced column \"" (List second node)
+                         "\" was not found because the FROM clause is missing"))
+        (let ((i (sql-column-index (List second node) (List third node) (first scope))))
+          (pair (List third (List ref i (first scope)))
+                (List ref i (rest scope))))))
+    (method neg (self node scope)
+      (let ((v (sql-eval (List second node) scope)))
         (let ((t (%sql-arith-type "-" v v)))
           (if (%sql-null? v) (pair t ())
             (%sql-checked t (- 0 (rest v)) "negation" "-" (pair t 0) v)))))
-    (method not (self node)
-      (let ((v (%sql-truth (sql-eval (List second node)))))
+    (method not (self node scope)
+      (let ((v (%sql-truth (sql-eval (List second node) scope))))
         (pair (lit boolean) (if (null? v) () (not v)))))
-    (method is-null (self node)
-      (let ((null (%sql-null? (sql-eval (List second node)))))
+    (method is-null (self node scope)
+      (let ((null (%sql-null? (sql-eval (List second node) scope))))
         (pair (lit boolean) (if (List third node) (not null) null))))
-    (method and (self node)
-      (let ((a (%sql-truth (sql-eval (List second node))))
-            (b (%sql-truth (sql-eval (List third node)))))
+    (method and (self node scope)
+      (let ((a (%sql-truth (sql-eval (List second node) scope)))
+            (b (%sql-truth (sql-eval (List third node) scope))))
         (pair (lit boolean)
           (match
             ((or (eq? a #f) (eq? b #f)) #f)
             ((or (null? a) (null? b)) ())
             (#t #t)))))
-    (method or (self node)
-      (let ((a (%sql-truth (sql-eval (List second node))))
-            (b (%sql-truth (sql-eval (List third node)))))
+    (method or (self node scope)
+      (let ((a (%sql-truth (sql-eval (List second node) scope)))
+            (b (%sql-truth (sql-eval (List third node) scope))))
         (pair (lit boolean)
           (match
             ((or (eq? a #t) (eq? b #t)) #t)
             ((or (null? a) (null? b)) ())
             (#t #f)))))
-    (method bin (self node)
+    (method bin (self node scope)
       ((class-static-ref SqlOp (List second node)) SqlOp
-       (sql-eval (List third node))
-       (sql-eval (List ref 3 node))
+       (sql-eval (List third node) scope)
+       (sql-eval (List ref 3 node) scope)
        (sql-expr-name node)))))
 
 ; How a binary operator is spelled in a heading
@@ -251,7 +273,9 @@
       (Str8 append "'" (Str8 replace "'" "''" (List second node)) "'"))
     (method bool (self node) (if (List second node) "true" "false"))
     (method null (self node) "NULL")
-    (method col (self node) (List second node))
+    (method col (self node)
+      (if (null? (List third node)) (List second node)
+        (Str8 append (List third node) "." (List second node))))
     (method neg (self node)
       (Str8 append "(-(" (sql-expr-name (List second node)) "))"))
     (method not (self node)
@@ -270,24 +294,49 @@
                    (%sql-op-text (List second node)) " "
                    (sql-expr-name (List ref 3 node)) ")"))))
 
-; --- statements --------------------------------------------------------------
+; --- casts -------------------------------------------------------------------
 
-(def-class SqlStatement ()
-  (static
-    (method select (self stmt)
-      (let ((items (List second stmt)))
-        (let ((values (List map (fn (_ i) (sql-eval (first i))) items)))
-          (list (List map
-                  (fn (_ i)
-                    (if (null? (List second i)) (sql-expr-name (first i))
-                      (List second i)))
-                  items)
-                (List map first values)
-                (list values)))))))
+; The integer TEXT spells, or nil: an optional sign, then digits
+(def %sql-text-integer
+  (fn (_ text)
+    (let ((n (Str8 length text)))
+      (let ((signed (and (> n 0) (or (Str8 starts? "-" text) (Str8 starts? "+" text)))))
+        (let ((start (if signed 1 0)))
+          (if (>= start n) ()
+            ((fn (self i acc)
+               (if (>= i n) (if (Str8 starts? "-" text) (- 0 acc) acc)
+                 (let ((d (- (Char ->int (Str8 ref i text)) 48)))
+                   (if (and (>= d 0) (<= d 9)) (self (+ i 1) (+ (* acc 10) d)) ()))))
+             start 0)))))))
 
-(def sql-execute
-  (fn (_ stmt) ((class-static-ref SqlStatement (first stmt)) SqlStatement stmt)))
+(def %sql-int-name (fn (_ t) (List third (%sql-row t %sql-int-rows))))
+
+; The x value of V as the type T holds it, for storing in a column
+(def sql-cast
+  (fn (_ v t)
+    (let ((from (first v)) (x (rest v)))
+      (match
+        ((null? x) ())
+        ((eq? t (lit varchar)) (sql-value-text v))
+        ((and (%sql-int? from) (%sql-int? t))
+          (if (%sql-fits? t x) x
+            (error (Str8 str "Conversion Error: Type " (%sql-int-name from)
+                             " with value " x
+                             " can't be cast because the value is out of range for the destination type "
+                             (%sql-int-name t)))))
+        ((and (eq? from (lit varchar)) (%sql-int? t))
+          (let ((n (%sql-text-integer (Str8 trim x))))
+            (if (and (not (null? n)) (%sql-fits? t n)) n
+              (error (Str8 str "Conversion Error: Could not convert string '" x
+                               "' to " (%sql-int-name t))))))
+        ((eq? from t) x)
+        (#t (error (Str8 str "Not implemented Error: casting " (%sql-type-name from)
+                             " to " (%sql-type-name t))))))))
+
+(def sql-truth %sql-truth)
+(def sql-order %sql-order)
+(def sql-null? %sql-null?)
 
 (provide sql/eval
-  sql-eval sql-expr-name sql-execute sql-value-text sql-type-heading
-  sql-integer-type?)
+  sql-eval sql-expr-name sql-column-index sql-cast sql-truth sql-order
+  sql-null? sql-value-text sql-type-heading sql-integer-type?)
