@@ -42,7 +42,13 @@
 ;                               that has them.
 ;   (drop TABLE IF-EXISTS)
 ;
-; A table of a FROM is a name, or a select statement in parentheses.
+; A table of a FROM is a name, a select statement in parentheses, or a
+; file, (file PATH FORMAT): a string, or a call of a function that reads
+; one, FORMAT then the format it reads, nil for a string.
+;
+;   (copy-to SOURCE PATH FORMAT HEADER)   SOURCE a table's name or a select
+;                                         statement; FORMAT a name or nil
+;   (copy-from TABLE PATH FORMAT)
 ;
 ; An expression, its head the name sql/eval's classes know it by:
 ;   (int N)  (str TEXT)  (bool B)  (null)
@@ -73,7 +79,8 @@
 (module sql/parse)
 (import x/type/list)
 (import x/type/str)
-(import sql/words sql-upper sql-lower sql-binary-ops sql-type-words)
+(import sql/words
+  sql-upper sql-lower sql-binary-ops sql-type-words sql-file-functions)
 (import sql/lex sql-tokenize)
 (import sql/number sql-decimal-read)
 
@@ -570,9 +577,27 @@
 ; (TABLE . tokens-left)
 (def %sql-table
   (fn (_ ts)
-    (if (and (%sql-op? ts "(") (%sql-query? (rest ts)))
-      (%sql-closed-query (rest ts))
-      (pair (%sql-name ts) (rest ts)))))
+    (match
+      ((and (%sql-op? ts "(") (%sql-query? (rest ts))) (%sql-closed-query (rest ts)))
+      ((and (not (null? ts)) (eq? (first (first ts)) (lit str)))
+        (pair (list (lit file) (List second (first ts)) ()) (rest ts)))
+      ((%sql-file-call? ts)
+        (pair (list (lit file) (List second (List third ts))
+                    (List second (%sql-file-function (List second (first ts)))))
+              (List drop 4 ts)))
+      (#t (pair (%sql-name ts) (rest ts))))))
+
+(def %sql-file-function
+  (fn (_ name)
+    (List find (fn (_ row) (str=? (first row) (sql-lower name))) sql-file-functions)))
+
+; TS starts with a function that reads a file, a string in its parentheses
+(def %sql-file-call?
+  (fn (_ ts)
+    (and (>= (List length ts) 4) (eq? (first (first ts)) (lit id))
+         (not (null? (%sql-file-function (List second (first ts)))))
+         (%sql-op? (rest ts) "(") (eq? (first (List third ts)) (lit str))
+         (%sql-op? (List drop 3 ts) ")"))))
 
 ; A table and its alias, after AS or bare
 (def %sql-source
@@ -927,9 +952,57 @@
           (pair (list (lit delete) table (first where)) (rest where))))
       (%sql-near ts))))
 
+; One option of a COPY, TS at its name: FORMAT and a name, or HEADER and
+; maybe true or false, as ((NAME VALUE) . tokens-left)
+(def %sql-copy-option
+  (fn (_ ts)
+    (match
+      ((and (%sql-word? ts "FORMAT") (%sql-name? (rest ts)))
+        (pair (list (lit format) (List second (List second ts))) (rest (rest ts))))
+      ((%sql-word? ts "HEADER")
+        (match
+          ((%sql-kw? (rest ts) "TRUE") (pair (list (lit header) #t) (rest (rest ts))))
+          ((%sql-kw? (rest ts) "FALSE") (pair (list (lit header) #f) (rest (rest ts))))
+          (#t (pair (list (lit header) #t) (rest ts)))))
+      ((null? ts) (%sql-near ts))
+      (#t (error (Str8 str "Not implemented Error: the COPY option " (List second (first ts))))))))
+
+; The options after a COPY's file, in parentheses or not there, as an
+; alist of (NAME VALUE)
+(def %sql-copy-options
+  (fn (_ ts)
+    (if (%sql-op? ts "(") (%sql-parenthesized %sql-copy-option ts) (pair () ts))))
+
+(def %sql-option
+  (fn (_ options name otherwise)
+    (let ((found (List find (fn (_ o) (eq? (first o) name)) options)))
+      (if (null? found) otherwise (List second found)))))
+
+; COPY table or (select statement) TO 'file', and COPY table FROM 'file',
+; each with options after
+(def %sql-copy
+  (fn (_ ts)
+    (let ((source (if (and (%sql-op? ts "(") (%sql-query? (rest ts)))
+                    (%sql-closed-query (rest ts))
+                    (pair (%sql-name ts) (rest ts)))))
+      (let ((after (rest source)))
+        (unless (and (or (%sql-word? after "TO") (%sql-kw? after "FROM"))
+                     (not (null? (rest after))) (eq? (first (List second after)) (lit str)))
+          (%sql-near (if (null? after) after (rest after))))
+        (let ((path (List second (List second after)))
+              (options (%sql-copy-options (rest (rest after)))))
+          (pair (if (%sql-word? after "TO")
+                  (list (lit copy-to) (first source) path
+                        (%sql-option (first options) (lit format) ())
+                        (%sql-option (first options) (lit header) #t))
+                  (list (lit copy-from) (first source) path
+                        (%sql-option (first options) (lit format) ())))
+                (rest options)))))))
+
 (def %sql-statement
   (fn (_ ts)
     (match
+      ((%sql-word? ts "COPY") (%sql-copy (rest ts)))
       ((%sql-query? ts) (%sql-query ts))
       ((%sql-kw? ts "CREATE") (%sql-create (rest ts)))
       ((%sql-word? ts "INSERT") (%sql-insert (rest ts)))

@@ -45,7 +45,15 @@
 ; names everywhere else
 (def sql-words
   (list "INSERT" "VALUES" "DROP" "BY" "ASC" "DESC" "NULLS" "FIRST" "LAST"
-        "CAST" "REPLACE" "IF" "EXISTS"))
+        "CAST" "REPLACE" "IF" "EXISTS" "UPDATE" "SET" "DELETE" "COPY" "TO"
+        "FORMAT" "HEADER" "INTERVAL" "EXTRACT"))
+
+; The functions that read a file as a table, and the format each reads it
+; as: nil for the one its name's ending says
+(def sql-file-functions
+  (list (list "read_csv" "csv") (list "read_csv_auto" "csv")
+        (list "read_json" "json") (list "read_json_auto" "json")
+        (list "read_ndjson" "json")))
 
 ; The reserved words that are values
 (def sql-constants (list "TRUE" "FALSE" "NULL"))
@@ -94,4 +102,4 @@
 
 (provide sql/words
   sql-lower sql-upper sql-same-name? sql-reserved sql-words sql-constants sql-ops sql-binary-ops sql-type-words
-  sql-aggregates)
+  sql-aggregates sql-file-functions)

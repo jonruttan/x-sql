@@ -66,6 +66,11 @@ What is built:
   joined to itself under two aliases.
 - **Set operations.** `UNION`, `INTERSECT` and `EXCEPT`, each with or
   without `ALL`; a trailing `ORDER BY` and `LIMIT` are the whole's.
+- **Files.** `FROM 'people.csv'` and `FROM 'people.json'`: a CSV or JSON
+  file is a table, its columns' types found from its values as DuckDB
+  finds them. `read_csv` and `read_json`. `COPY table TO 'file'`, `COPY
+  (SELECT ...) TO 'file'` and `COPY table FROM 'file'`, as CSV or as
+  JSON, an object a line.
 - **Subqueries.** A select statement in parentheses for its one value,
   after `[NOT] IN`, after `[NOT] EXISTS`, and as a table of a `FROM`;
   `WITH name AS (...)`. A subquery reads the row it is answered for.
@@ -115,8 +120,9 @@ In this order:
    in parentheses as the sides of a set operation.
 2. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
    ZONE, and the functions that go with them.
-3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
-   and structs, reading CSV and JSON files by name.
+3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
+   with them the nested values of a JSON file; a CSV's separator and its
+   other options; Parquet.
 4. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
 5. The servers the rest of the way: TLS with MySQL and MariaDB, once
@@ -162,6 +168,10 @@ No script runs against Oracle's MySQL.
   ASCII letters only.
 - Groups come in the order their keys first appear; DuckDB promises no
   order.
+- A file is read whole into memory, and its types are found from every
+  row: it is for files of thousands of rows, not millions. A CSV is
+  separated by commas only. A JSON value that is a list or an object is
+  refused.
 - `USING` and `NATURAL` are not built for RIGHT and FULL joins, where
   DuckDB shows the shared column as whichever side has a row.
 - A join compares every pair of rows, and a subquery is run again for

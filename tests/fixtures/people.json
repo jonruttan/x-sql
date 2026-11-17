@@ -1,0 +1,3 @@
+[{"id": 1, "name": "Ada", "score": 9.5, "active": true, "joined": "2026-01-31"},
+ {"id": 2, "name": "Grace", "score": 7, "active": false, "joined": "2024-02-29", "extra": "x"},
+ {"id": 3, "name": "Lin \"Q\" Wu", "score": null, "active": true, "joined": "2025-12-01"}]

@@ -20,6 +20,7 @@
 (import x/type/class)
 (import x/type/dict)
 (import sql/words sql-lower sql-same-name?)
+(import sql/files sql-file-read sql-file-write sql-file-stem)
 (import sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
@@ -68,12 +69,16 @@
 ; What DuckDB calls a select statement in a FROM that has no alias
 (def %sql-unnamed "unnamed_subquery")
 
-; One table of a FROM: a select statement in parentheses, a table a WITH
-; named, or a table there is.  The qualifier is its alias when it has one
+; One table of a FROM: a file, a select statement in parentheses, a table a
+; WITH named, or a table there is.  A file's qualifier is its name without
+; its directories and its ending.  The qualifier is its alias when it has one
 ; and its name when not.
 (def %sql-source
   (fn (_ name alias)
     (match
+      ((and (pair? name) (eq? (first name) (lit file)))
+        (%sql-result-source (sql-file-read (List second name) (List third name))
+                            (if (null? alias) (sql-file-stem (List second name)) alias)))
       ((pair? name)
         (%sql-result-source (%sql-query-result name ()) (if (null? alias) %sql-unnamed alias)))
       ((%sql-withs has? (%sql-key name))
@@ -668,6 +673,25 @@
                       (List range 0 (List length row)) row (List second table))
                     row)))
               (List third table))))))
+    ; A table's rows, or a select statement's, written to a file
+    (method copy-to (self stmt)
+      (let ((source (List second stmt)))
+        (sql-file-write
+          (if (pair? source) (%sql-query-result source ())
+            (%sql-query-result
+              (list (lit select) (list (list (list (lit star) ()) ())) (list (list source ()))
+                    () () () () () () #f)
+              ()))
+          (List third stmt) (List ref 3 stmt) (List ref 4 stmt))))
+    ; A file's rows added to a table, each value cast to its column
+    (method copy-from (self stmt)
+      (let ((table (%sql-table (List second stmt)))
+            (result (sql-file-read (List third stmt) (List ref 3 stmt))))
+        (let ((places (%sql-places table ())))
+          (%sql-store! table
+            (List append (List third table)
+              (List map (fn (_ values) (%sql-insert-row table places () values))
+                        (List third result)))))))
     (method delete (self stmt)
       (let ((table (%sql-table (List second stmt))) (where (List third stmt)))
         (let ((columns (%sql-table-scope-columns table)))

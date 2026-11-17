@@ -59,3 +59,14 @@
                          (newline)
                          (pair send recv))))
           (new SqlLink send send recv recv upgrade upgrade))))))
+
+; Where the fixture files are, and where a case may write one: both under
+; the bundle, wherever it is.  tests/lib is not kept by git.
+(def sql-fixtures (Str8 append %lang-root "/tests/fixtures/"))
+(def sql-scratch (Str8 append %lang-root "/tests/lib/"))
+
+; A case's statements with {F} and {S} in them as those two directories
+(def sql-files
+  (fn (_ text)
+    (sql (Str8 replace "{S}" sql-scratch (Str8 replace "{F}" sql-fixtures text)))))
+(import x/sys/file)
