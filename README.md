@@ -8,6 +8,7 @@ its way of showing a result.
 
     x -l sql                                  # a prompt
     x -l sql -- -c "SELECT 1 + 2 AS three"    # run and exit
+    x -l sql -- postgres://me@localhost/shop -c "SELECT version()"
 
     ┌───────┐
     │ three │
@@ -59,6 +60,13 @@ What is built:
   the pair beside the cursor is inverse. Tab completes a keyword, a
   type, a function, a table or a column. `.help` and `.help TOPIC`,
   `.tables`, `.schema [table]` and `.quit`.
+- **PostgreSQL.** `.connect postgres://user:password@host:port/database`
+  at the prompt, or the URL as an operand, sends statements to a server
+  over its wire protocol (`sql/pg.x`): the simple query, with sign-in by
+  trust, a password in the clear, MD5 and SCRAM-SHA-256. Results come in
+  the same box, headed by PostgreSQL's type names; an error, a notice and
+  a command's tag are the server's words. `.disconnect` comes back to the
+  engine here. The connection is not encrypted.
 - **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
@@ -76,8 +84,10 @@ In this order:
    and structs, reading CSV and JSON files by name.
 4. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
-5. Other servers behind the same prompt: PostgreSQL's wire protocol, and
-   MySQL's, which MariaDB also speaks.
+5. PostgreSQL the rest of the way: TLS, a password asked for at the
+   prompt, the server's tables and columns in `.tables`, `.schema` and
+   Tab, and a query cancelled with ctrl-c.
+6. MySQL's wire protocol, which MariaDB also speaks.
 
 ## Tests
 
@@ -86,7 +96,15 @@ In this order:
 
 The specs under `tests/specs/` take their expected output from DuckDB
 itself (`duckdb -no-agent -c`), version 2.0.0, except where a case says
-it differs and why.
+it differs and why. The PostgreSQL protocol's specs need no server: the
+bytes of both sides are spelled in the cases.
+
+    X=/path/to/x.sh sh tests/oracle/postgres.sh
+
+runs the driver against a real PostgreSQL, one the script starts in a
+scratch directory with a role for each way of signing in, and stops
+again. It needs PostgreSQL's programs (`PG_BIN` names their directory)
+and is not part of `make check`.
 
 ## Differences from DuckDB
 

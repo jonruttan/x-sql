@@ -123,3 +123,28 @@ For example:
 ant
 zebra
 ```
+
+## prompt servers
+
+### .connect refuses what is not a postgres:// URL
+
+```x
+(sql-eval-line ".connect mysql://me@h/d")
+```
+---
+    Connection Error: not a postgres:// URL, mysql://me@h/d
+
+### .disconnect with no server is nothing, and statements still run here
+
+```x
+(%seq (sql-eval-line ".disconnect") (sql-eval-line "SELECT 1 AS here;"))
+```
+---
+```output
+┌───────┐
+│ here  │
+│ int32 │
+├───────┤
+│     1 │
+└───────┘
+```

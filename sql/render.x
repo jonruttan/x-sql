@@ -67,13 +67,13 @@
         (Str8 replace "\n" "\\n" text)))))
 
 ; The J-th column's width: its name's, its type's, or its widest cell's.
-; A cell of TEXTS is (TEXT . NULL).
+; A cell of ROWS is (TEXT . NULL).
 (def %sql-width
-  (fn (_ j name type texts)
+  (fn (_ j name heading rows)
     (List fold
       (fn (_ w row) (%sql-max w (Width text (first (List ref j row)))))
-      (%sql-max (Width text name) (Width text (sql-type-heading type)))
-      texts)))
+      (%sql-max (Width text name) (Width text heading))
+      rows)))
 
 ; The line under a result with no rows: "0 rows", as far in as centres it
 ; under the box, the line two cells short of the box's width
@@ -91,40 +91,50 @@
       (list 6)
       widths)))
 
+; A table: NAMES and HEADINGS a text a column, RIGHTS whether each
+; column's cells go to the right, ROWS lists of (TEXT . NULL) cells
+(def sql-render-table
+  (fn (_ names headings rights cells)
+    (let ((rows (List map
+                  (fn (_ row)
+                    (List map (fn (_ c) (pair (%sql-one-line (first c)) (rest c))) row))
+                  cells))
+          (js (List range 0 (List length names))))
+      (let ((widths (%sql-fitted
+                      (List map
+                        (fn (_ j) (%sql-width j (List ref j names) (List ref j headings) rows))
+                        js)
+                      rows)))
+        (Str8 append
+          (%sql-rule "┌" "┬" "┐" widths)
+          (%sql-line (List map (fn (_ j) (%sql-bold (%sql-centre (List ref j widths) (List ref j names)))) js))
+          (%sql-line (List map (fn (_ j) (%sql-dim (%sql-centre (List ref j widths) (List ref j headings)))) js))
+          (if (null? rows) "" (%sql-rule "├" "┼" "┤" widths))
+          (Str8 join ""
+            (List map
+              (fn (_ row)
+                (%sql-line
+                  (List map
+                    (fn (_ j)
+                      (let ((cell ((if (List ref j rights) %sql-right %sql-left)
+                                   (List ref j widths) (first (List ref j row)))))
+                        (if (rest (List ref j row)) (%sql-dim cell) cell)))
+                    js)))
+              rows))
+          (%sql-rule "└" "┴" "┘" widths)
+          (if (null? rows) (%sql-no-rows widths) ""))))))
+
+; A result of the engine's, (NAMES TYPES ROWS) with each row a list of its
+; values
 (def sql-render
   (fn (_ result)
-    (let ((names (first result))
-          (types (List second result))
-          (texts (List map
-                   (fn (_ row)
-                     (List map
-                       (fn (_ v) (pair (%sql-one-line (sql-value-text v)) (sql-null? v)))
-                       row))
-                   (List third result))))
-      (let ((js (List range 0 (List length names))))
-        (let ((widths (%sql-fitted
-                        (List map
-                          (fn (_ j) (%sql-width j (List ref j names) (List ref j types) texts))
-                          js)
-                        texts)))
-          (Str8 append
-            (%sql-rule "┌" "┬" "┐" widths)
-            (%sql-line (List map (fn (_ j) (%sql-bold (%sql-centre (List ref j widths) (List ref j names)))) js))
-            (%sql-line (List map (fn (_ j) (%sql-dim (%sql-centre (List ref j widths) (sql-type-heading (List ref j types))))) js))
-            (if (null? texts) "" (%sql-rule "├" "┼" "┤" widths))
-            (Str8 join ""
-              (List map
-                (fn (_ row)
-                  (%sql-line
-                    (List map
-                      (fn (_ j)
-                        (let ((cell ((if (sql-numeric-type? (List ref j types))
-                                       %sql-right %sql-left)
-                                     (List ref j widths) (first (List ref j row)))))
-                          (if (rest (List ref j row)) (%sql-dim cell) cell)))
-                      js)))
-                texts))
-            (%sql-rule "└" "┴" "┘" widths)
-            (if (null? texts) (%sql-no-rows widths) "")))))))
+    (sql-render-table
+      (first result)
+      (List map sql-type-heading (List second result))
+      (List map sql-numeric-type? (List second result))
+      (List map
+        (fn (_ row)
+          (List map (fn (_ v) (pair (sql-value-text v) (sql-null? v))) row))
+        (List third result)))))
 
-(provide sql/render sql-render)
+(provide sql/render sql-render sql-render-table)
