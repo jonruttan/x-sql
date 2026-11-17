@@ -30,7 +30,9 @@
 ;   (drop TABLE IF-EXISTS)
 ;
 ; An expression, its head the name sql/eval's classes know it by:
-;   (int N)  (str TEXT)  (bool B)  (null)  (col NAME QUALIFIER)
+;   (int N)  (str TEXT)  (bool B)  (null)
+;   (col NAME QUALIFIER LOW-NAME LOW-QUALIFIER)   the names as written and
+;                                   in lower case; QUALIFIER nil or a table
 ;   (dec SCALED WIDTH SCALE TEXT)   a number with a point: SCALED its digits
 ;                                   as an integer, TEXT as it was written
 ;   (dbl TEXT)                      a number with an exponent, as written
@@ -43,7 +45,7 @@
 (module sql/parse)
 (import x/type/list)
 (import x/type/str)
-(import sql/words sql-binary-ops sql-type-words)
+(import sql/words sql-upper sql-lower sql-binary-ops sql-type-words)
 (import sql/lex sql-tokenize)
 (import sql/number sql-decimal-read)
 
@@ -69,7 +71,7 @@
   (fn (_ ts word)
     (if (null? ts) #f
       (if (or (eq? (first (first ts)) (lit kw)) (eq? (first (first ts)) (lit id)))
-        (str=? (Str8 upcase (List second (first ts))) word)
+        (str=? (sql-upper (List second (first ts))) word)
         #f))))
 
 ; TS after the words WORDS, or nil when it does not start with them
@@ -104,6 +106,13 @@
     (if (>= i n) acc
       (self text (+ i 1) n
             (+ (* acc 10) (- (Char ->int (Str8 ref i text)) 48))))))
+
+; A col node: sql/eval's sql-column-node, made here so that this module
+; reads nothing of the evaluator's
+(def %sql-col
+  (fn (_ name qualifier)
+    (list (lit col) name qualifier (sql-lower name)
+          (if (null? qualifier) () (sql-lower qualifier)))))
 
 ; The most digits a DECIMAL holds; a constant of more is a DOUBLE
 (def %sql-decimal-width 38)
@@ -150,7 +159,7 @@
   (fn (_ ts)
     (when (null? ts) (%sql-near ts))
     (let ((row (List find
-                 (fn (_ r) (str=? (first r) (Str8 upcase (List second (first ts)))))
+                 (fn (_ r) (str=? (first r) (sql-upper (List second (first ts)))))
                  sql-type-words))
           (args (%sql-type-arguments (rest ts))))
       (when (null? row)
@@ -200,9 +209,9 @@
               (%sql-call text (rest (rest ts))))
             ((%sql-name? ts)
               (if (and (%sql-op? (rest ts) ".") (%sql-name? (rest (rest ts))))
-                (pair (list (lit col) (List second (List third ts)) text)
+                (pair (%sql-col (List second (List third ts)) text)
                       (rest (rest (rest ts))))
-                (pair (list (lit col) text ()) (rest ts))))
+                (pair (%sql-col text ()) (rest ts))))
             (#t (%sql-near ts))))))))
 
 ; A call's arguments, TS after its opening parenthesis: none, a star, or

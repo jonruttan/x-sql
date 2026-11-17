@@ -65,14 +65,21 @@ What is built:
   sends statements to a server and shows what it answers in the same
   box, headed by the server's own names for its types; an error, a
   notice and what a statement did are in the server's client's words.
-  `.disconnect` comes back to the engine here. **A connection is not
-  encrypted.**
+  `.disconnect` comes back to the engine here.
   - `postgres://user:password@host:port/database`: PostgreSQL's wire
     protocol (`sql/pg.x`), the simple query, with sign-in by trust, a
     password in the clear, MD5 and SCRAM-SHA-256.
   - `mysql://` and `mariadb://`: the protocol MySQL and MariaDB share
     (`sql/my.x`), with sign-in by `mysql_native_password`, and by
     `caching_sha2_password` where the server has the password cached.
+- **TLS.** `?sslmode=` after a URL: `disable`; `prefer`, TLS when the
+  server has it; `require`, TLS or no connection; `verify-full`, that
+  with the server's certificate checked for its name against Mozilla's
+  roots. Only `verify-full` knows who the server is. It is TLS 1.3, the
+  platform's (`x/net/tls13`). With PostgreSQL nothing said is `prefer`.
+  **With MySQL and MariaDB TLS is not possible yet,** and nothing said
+  is `disable`: their servers ask every client for a certificate, which
+  the platform's TLS does not answer.
 - **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
@@ -90,11 +97,13 @@ In this order:
    and structs, reading CSV and JSON files by name.
 4. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
-5. The servers the rest of the way: TLS; MySQL's whole-password sign-in
-   under the server's RSA key, which a MySQL 8 server asks of a user it
-   has not cached; a password asked for at the prompt; the server's
-   tables and columns in `.tables`, `.schema` and Tab; a query cancelled
-   with ctrl-c.
+5. The servers the rest of the way: TLS with MySQL and MariaDB, once
+   the platform's TLS answers a request for a client certificate, and
+   with it MySQL's whole-password sign-in, which a MySQL 8 server asks of
+   a user it has not cached; a certificate authority of one's own for
+   `verify-full`; a password asked for at the prompt; the server's tables
+   and columns in `.tables`, `.schema` and Tab; a query cancelled with
+   ctrl-c.
 
 ## Tests
 

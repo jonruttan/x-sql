@@ -27,7 +27,8 @@
 (import x/type/list)
 (import x/type/str)
 (import x/reader/lexer)
-(import sql/words sql-reserved sql-ops)
+(import x/type/dict)
+(import sql/words sql-upper sql-reserved sql-ops)
 
 ; The text the Lexer appends so the last token meets a delimiter: a form
 ; feed, which the run of blanks leaves out, so a run at the end of the text
@@ -59,12 +60,18 @@
 (def %sql-unquote
   (fn (_ text) (Str8 sub 1 (- (Str8 length text) 2) text)))
 
+; A word as written to its token, each distinct spelling worked out once
+(def %sql-words (Dict make))
+
 (def %sql-word
   (fn (_ text)
-    (let ((up (Str8 upcase text)))
-      (if (List includes? up sql-reserved)
-        (list (lit kw) up)
-        (list (lit id) text)))))
+    (unless (%sql-words has? text)
+      (%sql-words set! text
+        (let ((up (sql-upper text)))
+          (if (List includes? up sql-reserved)
+            (list (lit kw) up)
+            (list (lit id) text)))))
+    (%sql-words get text)))
 
 ; RAW to the parser's tokens, newest first in ACC.  GLUE is the tag of the
 ; quoted literal the last raw token was, nil when anything else was.

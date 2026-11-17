@@ -19,8 +19,10 @@
 (import x/type/str)
 (import x/type/class)
 (import x/type/dict)
+(import sql/words sql-lower sql-same-name?)
 (import sql/eval
-  sql-eval sql-expr-name sql-column-index sql-aggregated? sql-cast
+  sql-eval sql-expr-name sql-column sql-column-node sql-column-index
+  sql-aggregated? sql-cast
   sql-truth sql-order sql-null? sql-value-text)
 
 ; --- the tables --------------------------------------------------------------
@@ -28,7 +30,7 @@
 ; A table's name in lower case to the table: names match in any case
 (def %sql-tables (Dict make))
 
-(def %sql-key (fn (_ name) (Str8 downcase name)))
+(def %sql-key (fn (_ name) (sql-lower name)))
 
 (def %sql-table
   (fn (_ name)
@@ -48,14 +50,14 @@
 ; --- FROM --------------------------------------------------------------------
 
 ; What FROM reads is (COLUMNS . ROWS): COLUMNS a list of
-; (QUALIFIER NAME TYPE), ROWS lists of x values.
+; sql/eval's columns, ROWS lists of x values.
 
 ; One table: the qualifier its alias when it has one, its name when not
 (def %sql-source
   (fn (_ name alias)
     (let ((table (%sql-table name)))
       (let ((qualifier (if (null? alias) (first table) alias)))
-        (pair (List map (fn (_ c) (list qualifier (first c) (List second c)))
+        (pair (List map (fn (_ c) (sql-column qualifier (first c) (List second c)))
                         (List second table))
               (List third table))))))
 
@@ -112,7 +114,7 @@
 (def %sql-star
   (fn (_ qualifier columns)
     (let ((chosen (if (null? qualifier) columns
-                    (List filter (fn (_ c) (Str8 ci=? (first c) qualifier))
+                    (List filter (fn (_ c) (sql-same-name? (first c) qualifier))
                                  columns))))
       (match
         ((null? columns)
@@ -122,7 +124,7 @@
                            "\" not found!")))
         (#t
           (List map
-            (fn (_ c) (list (list (lit col) (List second c) (first c)) ()))
+            (fn (_ c) (list (sql-column-node (List second c) (first c)) ()))
             chosen))))))
 
 ; ITEMS with each star replaced by the items it stands for
@@ -144,8 +146,7 @@
         ((not (null? (List second item))) (List second item))
         ((and (eq? (first e) (lit col)) (not (null? columns)))
           (List second
-            (List ref (sql-column-index (List second e) (List third e) columns)
-                      columns)))
+            (List ref (sql-column-index e columns) columns)))
         (#t (sql-expr-name e))))))
 
 ; --- ORDER BY ----------------------------------------------------------------
@@ -167,7 +168,7 @@
         (let ((item (List find
                       (fn (_ i)
                         (and (not (null? (List second i)))
-                             (Str8 ci=? (List second i) (List second e))))
+                             (sql-same-name? (List second i) (List second e))))
                       items)))
           (if (null? item) e (first item))))
       (#t e))))
@@ -261,8 +262,7 @@
   (fn (_ a b columns)
     (or (equal? a b)
         (and (eq? (first a) (lit col)) (eq? (first b) (lit col))
-             (= (sql-column-index (List second a) (List third a) columns)
-                (sql-column-index (List second b) (List third b) columns))))))
+             (= (sql-column-index a columns) (sql-column-index b columns))))))
 
 ; E can be answered for a group: every column in it is inside a key or an
 ; aggregate
@@ -321,7 +321,7 @@
 (def %sql-distinct-columns
   (fn (self columns)
     (unless (null? columns)
-      (when (List any? (fn (_ c) (Str8 ci=? (first c) (first (first columns))))
+      (when (List any? (fn (_ c) (sql-same-name? (first c) (first (first columns))))
                        (rest columns))
         (error (Str8 str "Catalog Error: Column with name \"" (first (first columns))
                          "\" already exists!")))
@@ -335,7 +335,7 @@
       (if (null? names) (List range 0 (List length columns))
         (List map
           (fn (_ name)
-            (let ((i (List find-index (fn (_ c) (Str8 ci=? (first c) name)) columns)))
+            (let ((i (List find-index (fn (_ c) (sql-same-name? (first c) name)) columns)))
               (if (null? i)
                 (error (Str8 str "Binder Error: Table \"" (first table)
                                  "\" does not have a column with name \"" name "\""))

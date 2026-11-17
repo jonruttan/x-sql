@@ -235,7 +235,7 @@ Connection Error: the server closed the connection
 
 ## postgres urls
 
-`sql-url-parse` answers (USER PASSWORD HOST PORT DATABASE SCHEME).
+`sql-url-parse` answers (USER PASSWORD HOST PORT DATABASE SCHEME SSLMODE).
 
 ### every part written
 
@@ -243,7 +243,7 @@ Connection Error: the server closed the connection
 (%seq (write (sql-url-parse "postgres://me:pw@db.example:5433/shop")) (newline))
 ```
 ---
-    ("me" "pw" "db.example" 5433 "shop" "postgres")
+    ("me" "pw" "db.example" 5433 "shop" "postgres" "prefer")
 
 ### the port is PostgreSQL's and the database the user's name when not written
 
@@ -251,7 +251,7 @@ Connection Error: the server closed the connection
 (%seq (write (List drop 2 (sql-url-parse "postgresql://me@localhost"))) (newline))
 ```
 ---
-    ("localhost" 5432 "me" "postgresql")
+    ("localhost" 5432 "me" "postgresql" "prefer")
 
 ### what follows a question mark is not the database
 
@@ -259,7 +259,7 @@ Connection Error: the server closed the connection
 (%seq (write (List drop 2 (sql-url-parse "postgres://me@h/d?sslmode=disable"))) (newline))
 ```
 ---
-    ("h" 5432 "d" "postgres")
+    ("h" 5432 "d" "postgres" "disable")
 
 ### another scheme is refused
 

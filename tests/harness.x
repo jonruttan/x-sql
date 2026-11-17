@@ -39,14 +39,23 @@
 (import sql/my my-start my-query my-auth)
 (import sql/base sql-url-parse sql-remote-text sql-pg-results)
 
-; A link whose server is the bytes HEX spells, for a case with no server.
-; What is sent to it is shown, a write a line.
+; A link whose server is the bytes HEX spells, for a case with no server:
+; each read answers the bytes up to the next / in HEX.  What is sent to it
+; is shown, a write a line.  Where a protocol begins TLS it shows that,
+; with the name and whether the certificate is to be checked, and the
+; bytes go on in the clear: a case reads what would be inside.
 (def canned-link
   (fn (_ hex)
-    (let ((left (Dict from-plist (list (lit run) (Bytes of-hex hex)))))
+    (let ((left (Dict from-plist (list (lit runs) (Str8 split "/" hex)))))
       (let ((send (fn (_ region) (display "sent ") (display (Bytes hex region)) (newline)))
             (recv (fn (_)
-                    (let ((run (left get (lit run))))
-                      (left del! (lit run))
-                      (if (null? run) () (pair (first run) (Bytes length run)))))))
-        (new SqlLink send send recv recv)))))
+                    (let ((runs (left get (lit runs))))
+                      (if (null? runs) ()
+                        (let ((run (Bytes of-hex (first runs))))
+                          (left set! (lit runs) (rest runs))
+                          (pair (first run) (Bytes length run))))))))
+        (let ((upgrade (fn (_ host verify)
+                         (display (Str8 append "tls " host (if verify " checked" " unchecked")))
+                         (newline)
+                         (pair send recv))))
+          (new SqlLink send send recv recv upgrade upgrade))))))

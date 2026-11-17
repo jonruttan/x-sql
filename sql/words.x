@@ -11,6 +11,28 @@
 ; the parser may read as a keyword where the grammar asks for one.
 
 (module sql/words)
+(import x/type/str)
+(import x/type/dict)
+
+; A name in one case, each distinct spelling folded once: the platform's
+; case conversion costs thousands of objects a word, and a name is
+; compared for every column of every row
+(def %sql-lowered (Dict make))
+(def %sql-uppered (Dict make))
+
+(def sql-lower
+  (fn (_ text)
+    (unless (%sql-lowered has? text) (%sql-lowered set! text (Str8 downcase text)))
+    (%sql-lowered get text)))
+
+(def sql-upper
+  (fn (_ text)
+    (unless (%sql-uppered has? text) (%sql-uppered set! text (Str8 upcase text)))
+    (%sql-uppered get text)))
+
+; Two names are one, whatever their case
+(def sql-same-name?
+  (fn (_ a b) (str=? (sql-lower a) (sql-lower b))))
 
 (def sql-reserved
   (list "SELECT" "FROM" "WHERE" "AS" "AND" "OR" "NOT" "IS" "NULL" "TRUE"
@@ -68,5 +90,5 @@
 (def sql-aggregates (list "count" "sum" "min" "max" "avg"))
 
 (provide sql/words
-  sql-reserved sql-words sql-constants sql-ops sql-binary-ops sql-type-words
+  sql-lower sql-upper sql-same-name? sql-reserved sql-words sql-constants sql-ops sql-binary-ops sql-type-words
   sql-aggregates)
