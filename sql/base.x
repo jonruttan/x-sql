@@ -10,16 +10,21 @@
 (import x/type/list)
 (import x/type/str)
 (import sql/parse sql-parse)
-(import sql/eval sql-execute)
+(import sql/exec sql-execute)
 (import sql/render sql-render)
 
 (def sql-version "0.1.0")
 
-; Every statement of TEXT run in order: their results, as one text
+; Every statement of TEXT run in order: their results, as one text.  A
+; statement with nothing to show adds nothing.
 (def sql-run
   (fn (_ text)
     (Str8 join ""
-      (List map (fn (_ s) (sql-render (sql-execute s))) (sql-parse text)))))
+      (List map
+        (fn (_ s)
+          (let ((result (sql-execute s)))
+            (if (null? result) "" (sql-render result))))
+        (sql-parse text)))))
 
 ; The operands after `x -l sql --`: -c SQL, as often as wanted.  An error
 ; ends the run with status 1.

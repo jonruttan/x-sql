@@ -18,6 +18,7 @@
 (import x/repl/lang)
 (import sql/lex sql-lex)
 (import sql/base sql-run)
+(import sql/exec sql-table-names)
 
 ; The last token of TEXT that is not a blank or a comment is a semicolon
 (def %sql-closed?
@@ -45,9 +46,12 @@
   (static
     (method quit (self) (Sys exit 0))
     (method exit (self) (Sys exit 0))
+    (method tables (self)
+      (List for-each (fn (_ name) (display name) (newline)) (sql-table-names)))
     (method help (self)
       (display "A statement ends with a semicolon and may span lines.\n")
       (display "  .help    this text\n")
+      (display "  .tables  the tables there are\n")
       (display "  .quit    leave (.exit and ctrl-d do the same)\n"))))
 
 (def %sql-dot
