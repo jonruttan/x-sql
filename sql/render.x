@@ -37,8 +37,11 @@
   (fn (_ w text) (Str8 append text (%sql-spaces (- w (Width text text))))))
 
 ; A rule: LEFT, a run of dashes a column, MID between two, RIGHT
-(def %sql-dim (fn (_ text) (Ansi wrap (Ansi dim) text)))
-(def %sql-bold (fn (_ text) (Ansi wrap (Ansi bold) text)))
+; With colour off a text is itself, and wrapping it is not asked for
+(def %sql-dim
+  (fn (_ text) (if (Ansi enabled?) (Ansi wrap (Ansi dim) text) text)))
+(def %sql-bold
+  (fn (_ text) (if (Ansi enabled?) (Ansi wrap (Ansi bold) text) text)))
 
 (def %sql-rule
   (fn (_ left mid right widths)
@@ -62,17 +65,23 @@
 ; a cell, a backslash and a letter
 (def %sql-one-line
   (fn (_ text)
-    (Str8 replace "\t" "\\t"
-      (Str8 replace "\r" "\\r"
-        (Str8 replace "\n" "\\n" text)))))
+    (if (or (Str8 includes? "\n" text) (Str8 includes? "\r" text)
+            (Str8 includes? "\t" text))
+      (Str8 replace "\t" "\\t"
+        (Str8 replace "\r" "\\r"
+          (Str8 replace "\n" "\\n" text)))
+      text)))
 
-; The J-th column's width: its name's, its type's, or its widest cell's.
-; A cell of ROWS is (TEXT . NULL).
-(def %sql-width
-  (fn (_ j name heading rows)
+; Each column's width: its name's, its type's, or its widest cell's.  A
+; cell of ROWS is (TEXT . NULL).  The rows are walked once, every column
+; in step.
+(def %sql-widths
+  (fn (_ names headings rows)
     (List fold
-      (fn (_ w row) (%sql-max w (Width text (first (List ref j row)))))
-      (%sql-max (Width text name) (Width text heading))
+      (fn (_ widths row)
+        (List map (fn (_ w cell) (%sql-max w (Width text (first cell)))) widths row))
+      (List map (fn (_ name heading) (%sql-max (Width text name) (Width text heading)))
+                names headings)
       rows)))
 
 ; The line under a result with no rows: "0 rows", as far in as centres it
@@ -92,40 +101,38 @@
       widths)))
 
 ; A table: NAMES and HEADINGS a text a column, RIGHTS whether each
-; column's cells go to the right, ROWS lists of (TEXT . NULL) cells
+; column's cells go to the right, ROWS lists of (TEXT . NULL) cells, each
+; text on one line
 (def sql-render-table
-  (fn (_ names headings rights cells)
-    (let ((rows (List map
-                  (fn (_ row)
-                    (List map (fn (_ c) (pair (%sql-one-line (first c)) (rest c))) row))
-                  cells))
-          (js (List range 0 (List length names))))
-      (let ((widths (%sql-fitted
-                      (List map
-                        (fn (_ j) (%sql-width j (List ref j names) (List ref j headings) rows))
-                        js)
-                      rows)))
-        (Str8 append
-          (%sql-rule "┌" "┬" "┐" widths)
-          (%sql-line (List map (fn (_ j) (%sql-bold (%sql-centre (List ref j widths) (List ref j names)))) js))
-          (%sql-line (List map (fn (_ j) (%sql-dim (%sql-centre (List ref j widths) (List ref j headings)))) js))
-          (if (null? rows) "" (%sql-rule "├" "┼" "┤" widths))
-          (Str8 join ""
-            (List map
-              (fn (_ row)
-                (%sql-line
-                  (List map
-                    (fn (_ j)
-                      (let ((cell ((if (List ref j rights) %sql-right %sql-left)
-                                   (List ref j widths) (first (List ref j row)))))
-                        (if (rest (List ref j row)) (%sql-dim cell) cell)))
-                    js)))
-              rows))
-          (%sql-rule "└" "┴" "┘" widths)
-          (if (null? rows) (%sql-no-rows widths) ""))))))
+  (fn (_ names headings rights rows)
+    (let ((widths (%sql-fitted (%sql-widths names headings rows) rows)))
+      (Str8 append
+        (%sql-rule "┌" "┬" "┐" widths)
+        (%sql-line (List map (fn (_ w name) (%sql-bold (%sql-centre w name))) widths names))
+        (%sql-line (List map (fn (_ w heading) (%sql-dim (%sql-centre w heading))) widths headings))
+        (if (null? rows) "" (%sql-rule "├" "┼" "┤" widths))
+        (Str8 join ""
+          (List map
+            (fn (_ row)
+              (%sql-line
+                (List map
+                  (fn (_ w right cell)
+                    (let ((text ((if right %sql-right %sql-left) w (first cell))))
+                      (if (rest cell) (%sql-dim text) text)))
+                  widths rights row)))
+            rows))
+        (%sql-rule "└" "┴" "┘" widths)
+        (if (null? rows) (%sql-no-rows widths) "")))))
+
+; ROWS with each cell's text on one line
+(def sql-one-line-rows
+  (fn (_ rows)
+    (List map
+      (fn (_ row) (List map (fn (_ c) (pair (%sql-one-line (first c)) (rest c))) row))
+      rows)))
 
 ; A result of the engine's, (NAMES TYPES ROWS) with each row a list of its
-; values
+; values.  Only text can hold a newline.
 (def sql-render
   (fn (_ result)
     (sql-render-table
@@ -134,7 +141,12 @@
       (List map sql-numeric-type? (List second result))
       (List map
         (fn (_ row)
-          (List map (fn (_ v) (pair (sql-value-text v) (sql-null? v))) row))
+          (List map
+            (fn (_ v)
+              (pair (if (eq? (first v) (lit varchar)) (%sql-one-line (sql-value-text v))
+                      (sql-value-text v))
+                    (sql-null? v)))
+            row))
         (List third result)))))
 
-(provide sql/render sql-render sql-render-table)
+(provide sql/render sql-render sql-render-table sql-one-line-rows)

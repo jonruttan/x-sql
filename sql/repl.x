@@ -22,7 +22,7 @@
 (import x/repl/lang)
 (import x/tool/syntax)
 (import sql/words
-  sql-reserved sql-words sql-constants sql-type-words sql-aggregates)
+  sql-lower sql-reserved sql-words sql-constants sql-type-words sql-aggregates)
 (import sql/lex sql-lex)
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
 (import sql/base
@@ -185,9 +185,9 @@
 ; is typed in, the functions, the tables and their columns
 (def %sql-candidates
   (fn (_ word)
-    (let ((lower (str=? word (Str8 downcase word))))
+    (let ((lower (str=? word (sql-lower word))))
       (List append
-        (List map (fn (_ w) (if lower (Str8 downcase w) w)) (%sql-language-words))
+        (List map (fn (_ w) (if lower (sql-lower w) w)) (%sql-language-words))
         sql-aggregates
         (sql-table-names)
         (List flat-map
@@ -211,7 +211,7 @@
               (List uniq
                 (List sort (fn (_ a b) (Str8 <? a b))
                   (List filter
-                    (fn (_ name) (Str8 starts? (Str8 downcase word) (Str8 downcase name)))
+                    (fn (_ name) (Str8 starts? (sql-lower word) (sql-lower name)))
                     (%sql-candidates word)))))))))))
 
 ; --- an entry ----------------------------------------------------------------

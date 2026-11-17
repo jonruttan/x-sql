@@ -12,6 +12,7 @@
 (module sql/help)
 (import x/type/list)
 (import x/type/str)
+(import sql/words sql-same-name?)
 
 ; (NAME SUMMARY FORMS EXAMPLES), FORMS and EXAMPLES lists of lines
 (def sql-help-topics
@@ -125,7 +126,7 @@
 
 (def sql-help-topic
   (fn (_ name)
-    (List find (fn (_ row) (Str8 ci=? (first row) name)) sql-help-topics)))
+    (List find (fn (_ row) (sql-same-name? (first row) name)) sql-help-topics)))
 
 (def %sql-help-lines
   (fn (_ lines) (List for-each (fn (_ line) (display "  ") (display line) (newline)) lines)))

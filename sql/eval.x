@@ -24,7 +24,7 @@
 (import x/type/class)
 (import x/num/tower)
 (import x/num/float)
-(import sql/words sql-binary-ops sql-aggregates)
+(import sql/words sql-lower sql-same-name? sql-binary-ops sql-aggregates)
 (import sql/lex sql-lex)
 (import sql/number
   sql-pow10 sql-double-text sql-double-of sql-double-scaled
@@ -343,33 +343,55 @@
 (def sql-expr-name
   (fn (_ node) ((class-static-ref SqlName (first node)) SqlName node)))
 
-; The places in COLUMNS of the columns NAME names under QUALIFIER, nil or
-; a table's name; names match in any case
-(def %sql-column-places
-  (fn (_ name qualifier columns)
-    (List filter
-      (fn (_ i)
-        (let ((c (List ref i columns)))
-          (and (Str8 ci=? (List second c) name)
-               (or (null? qualifier) (Str8 ci=? (first c) qualifier)))))
-      (List range 0 (List length columns)))))
+; A column of a scope is (QUALIFIER NAME TYPE LOW-QUALIFIER LOW-NAME), and
+; a col node (col NAME QUALIFIER LOW-NAME LOW-QUALIFIER): the names as
+; written, for a heading or an error, and in lower case, folded once where
+; the column and the node are made, so finding a column for a row
+; compares strings as they are.
+(def %sql-fourth (fn (_ l) (first (rest (rest (rest l))))))
+(def %sql-fifth (fn (_ l) (first (rest (rest (rest (rest l)))))))
 
-; The place in COLUMNS of the one column NAME names.  None, a table that is
-; not there, and more than one are errors.
+(def %sql-nth
+  (fn (self l i) (if (= i 0) (first l) (self (rest l) (- i 1)))))
+
+; A scope's column of a table under its qualifier
+(def sql-column
+  (fn (_ qualifier name type)
+    (list qualifier name type (sql-lower qualifier) (sql-lower name))))
+
+; A col node for a name, QUALIFIER nil or a table's name
+(def sql-column-node
+  (fn (_ name qualifier)
+    (list (lit col) name qualifier (sql-lower name)
+          (if (null? qualifier) () (sql-lower qualifier)))))
+
+; The places in COLUMNS, from I, of the columns a lower-case name names
+; under a lower-case qualifier or nil
+(def %sql-column-places
+  (fn (self name qualifier columns i)
+    (if (null? columns) ()
+      (if (and (str=? (%sql-fifth (first columns)) name)
+               (or (null? qualifier) (str=? (%sql-fourth (first columns)) qualifier)))
+        (pair i (self name qualifier (rest columns) (+ i 1)))
+        (self name qualifier (rest columns) (+ i 1))))))
+
+; The place in COLUMNS of the one column a col NODE names.  None, a table
+; that is not there, and more than one are errors.
 (def sql-column-index
-  (fn (_ name qualifier columns)
-    (when (and (not (null? qualifier))
-               (null? (List find (fn (_ c) (Str8 ci=? (first c) qualifier)) columns)))
-      (error (Str8 str "Binder Error: Referenced table \"" qualifier "\" not found!")))
-    (let ((places (%sql-column-places name qualifier columns)))
+  (fn (_ node columns)
+    (let ((places (%sql-column-places (%sql-fourth node) (%sql-fifth node) columns 0)))
       (match
+        ((and (not (null? places)) (null? (rest places))) (first places))
+        ((and (null? places) (not (null? (%sql-fifth node)))
+              (null? (List find (fn (_ c) (str=? (%sql-fourth c) (%sql-fifth node))) columns)))
+          (error (Str8 str "Binder Error: Referenced table \"" (List third node)
+                           "\" not found!")))
         ((null? places)
-          (error (Str8 str "Binder Error: Referenced column \"" name
+          (error (Str8 str "Binder Error: Referenced column \"" (List second node)
                            "\" not found in FROM clause!")))
-        ((null? (rest places)) (first places))
         (#t
           (error (Str8 str "Binder Error: Ambiguous reference to column name \""
-                           name "\" (use: "
+                           (List second node) "\" (use: "
                            (Str8 join " or "
                              (List map
                                (fn (_ i)
@@ -381,7 +403,7 @@
 ; --- aggregates --------------------------------------------------------------
 
 (def %sql-aggregate?
-  (fn (_ name) (List includes? (Str8 downcase name) sql-aggregates)))
+  (fn (_ name) (List includes? (sql-lower name) sql-aggregates)))
 
 ; NODE holds a call to an aggregate, at any depth
 (def sql-aggregated?
@@ -441,7 +463,7 @@
 (def %sql-no-function
   (fn (_ node t)
     (error (Str8 str "Binder Error: No function matches the given name and argument types '"
-                     (Str8 downcase (List second node)) "(" (%sql-type-name t) ")'."))))
+                     (sql-lower (List second node)) "(" (%sql-type-name t) ")'."))))
 
 ; The exact sum of VALUES as a T, which holds less than LIMIT either way;
 ; NULL when there are none
@@ -514,12 +536,12 @@
       (if (null? scope)
         (error (Str8 str "Binder Error: Referenced column \"" (List second node)
                          "\" was not found because the FROM clause is missing"))
-        (let ((i (sql-column-index (List second node) (List third node) (first scope))))
-          (pair (List third (List ref i (first scope)))
-                (List ref i (List second scope))))))
+        (let ((i (sql-column-index node (first scope))))
+          (pair (first (rest (rest (%sql-nth (first scope) i))))
+                (%sql-nth (first (rest scope)) i)))))
     (method call (self node scope)
       (let ((aggregate (class-static-ref SqlAggregate
-                         (Str8 ->sym (Str8 downcase (List second node))))))
+                         (Str8 ->sym (sql-lower (List second node))))))
         (match
           ((null? aggregate)
             (error (Str8 str "Catalog Error: Scalar Function with name "
@@ -593,10 +615,10 @@
     (method call (self node)
       (let ((args (List third node)))
         (if (and (%sql-aggregate? (List second node))
-                 (Str8 ci=? (List second node) "count")
+                 (sql-same-name? (List second node) "count")
                  (or (null? args) (eq? (first (first args)) (lit star))))
           "count_star()"
-          (Str8 append (Str8 downcase (List second node)) "("
+          (Str8 append (sql-lower (List second node)) "("
                        (if (List ref 3 node) "DISTINCT " "")
                        (Str8 join ", " (List map sql-expr-name args))
                        ")"))))
@@ -753,6 +775,7 @@
 (def sql-null? %sql-null?)
 
 (provide sql/eval
-  sql-eval sql-expr-name sql-column-index sql-aggregated? sql-cast
+  sql-eval sql-expr-name sql-column sql-column-node sql-column-index
+  sql-aggregated? sql-cast
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type?)

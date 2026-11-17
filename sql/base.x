@@ -13,7 +13,7 @@
 (import sql/exec sql-execute)
 (import x/repl/ansi)
 (import x/type/dict)
-(import sql/render sql-render sql-render-table)
+(import sql/render sql-render sql-render-table sql-one-line-rows)
 (import x/type/class)
 (import sql/link sql-socket-link)
 (import sql/pg pg-start pg-query pg-finish pg-type-name pg-type-number?)
@@ -131,7 +131,8 @@
             ((str? result) (Str8 append result "\n"))
             ((null? (first result)) (Str8 append (List ref 4 result) "\n"))
             (#t (sql-render-table (first result) (List second result)
-                                  (List third result) (List ref 3 result)))))
+                                  (List third result)
+                                  (sql-one-line-rows (List ref 3 result))))))
         results))))
 
 ; PostgreSQL's results, which name a type by its OID, as sql-remote-text
