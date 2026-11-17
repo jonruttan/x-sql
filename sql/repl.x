@@ -25,7 +25,7 @@
   sql-reserved sql-words sql-constants sql-type-words sql-aggregates)
 (import sql/lex sql-lex)
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
-(import sql/base sql-run sql-error-text)
+(import sql/base sql-run sql-error-text sql-connect! sql-disconnect! sql-connection)
 (import sql/exec sql-table-names sql-table-columns)
 (import sql/eval sql-type-name)
 (import sql/help sql-help-topics sql-help-topic sql-help-show sql-help-index)
@@ -192,7 +192,8 @@
           (fn (_ table) (List map first (sql-table-columns table)))
           (sql-table-names))))))
 
-(def %sql-dot-names (list ".exit" ".help" ".quit" ".schema" ".tables"))
+(def %sql-dot-names
+  (list ".connect" ".disconnect" ".exit" ".help" ".quit" ".schema" ".tables"))
 
 ; The seam the editor calls: the word before the cursor and the names it
 ; could become, sorted and each once.  A line that starts with a dot
@@ -250,12 +251,29 @@
                ");"))
     (newline)))
 
+; The prompt says where statements go: sql> here, and a server's database
+; and host when there is one
+(def %sql-prompt!
+  (fn (_)
+    (Lang register! "sql"
+      (list (pair (lit %repl-prompt)
+                  (if (null? (sql-connection)) "sql> "
+                    (Str8 append (sql-connection) "> ")))))
+    (when (str=? (Lang current) "sql") (Lang use! "sql"))))
+
 ; A command is a static method named for it, taking what follows it on the
 ; line
 (def-class SqlDot ()
   (static
     (method quit (self rest-of-line) (Sys exit 0))
     (method exit (self rest-of-line) (Sys exit 0))
+    (method connect (self rest-of-line)
+      (display (Str8 append "connected to " (sql-connect! rest-of-line)))
+      (newline)
+      (%sql-prompt!))
+    (method disconnect (self rest-of-line)
+      (sql-disconnect!)
+      (%sql-prompt!))
     (method tables (self rest-of-line)
       (List for-each (fn (_ name) (display name) (newline)) (sql-table-names)))
     (method schema (self rest-of-line)

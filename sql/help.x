@@ -91,8 +91,19 @@
             "::                      a cast"
             "A NULL operand answers NULL, but for AND, OR and IS.")
       (list "SELECT 7 / 2, 7 // 2, 7 % 2, 'n=' || 1 + 2, NULL IS NULL;"))
+    (list "connect" "Statements sent to a PostgreSQL server."
+      (list ".connect postgres://[user[:password]@]host[:port][/database]"
+            ".disconnect"
+            "The user is PGUSER or USER when none is written, the password"
+            "PGPASSWORD, the port 5432, the database the user's name."
+            "Once connected a statement is the server's to read: its SQL, its"
+            "types, its errors.  .tables, .schema and Tab's tables are still"
+            "the engine's here.  The connection is not encrypted.")
+      (list ".connect postgres://me@localhost/mydb"
+            "x -l sql -- postgres://me@localhost/mydb -c \"SELECT version()\""))
     (list "prompt" "The prompt's own commands, each on a line starting with a dot."
       (list ".help [topic]     this help, or one topic"
+            ".connect URL      send statements to a PostgreSQL server; .disconnect"
             ".tables           the tables there are"
             ".schema [table]   the columns of every table, or of one"
             ".quit             leave (.exit and ctrl-d do the same)"
