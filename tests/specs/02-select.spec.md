@@ -223,3 +223,18 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -c`, unless 
 │ true    │ true     │
 └─────────┴──────────┘
 ```
+
+### a newline or a tab in a cell is shown as a backslash and a letter
+
+```x
+(sql "SELECT 'a\nb' AS s, 'tab	x' AS t")
+```
+---
+```output
+┌─────────┬─────────┐
+│    s    │    t    │
+│ varchar │ varchar │
+├─────────┼─────────┤
+│ a\nb    │ tab\tx  │
+└─────────┴─────────┘
+```

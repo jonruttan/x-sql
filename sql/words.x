@@ -19,6 +19,15 @@
         "IN" "DISTINCT" "ALL" "CREATE" "TABLE" "INTO" "WITH" "INNER" "LEFT"
         "RIGHT" "FULL" "CROSS" "OUTER" "NATURAL"))
 
+; The words the parser reads where the grammar asks for them and that are
+; names everywhere else
+(def sql-words
+  (list "INSERT" "VALUES" "DROP" "BY" "ASC" "DESC" "NULLS" "FIRST" "LAST"
+        "CAST" "REPLACE" "IF" "EXISTS"))
+
+; The reserved words that are values
+(def sql-constants (list "TRUE" "FALSE" "NULL"))
+
 ; Longest first where one operator starts another: the Lexer's table takes
 ; the longest literal present.
 (def sql-ops
@@ -59,4 +68,5 @@
 (def sql-aggregates (list "count" "sum" "min" "max" "avg"))
 
 (provide sql/words
-  sql-reserved sql-ops sql-binary-ops sql-type-words sql-aggregates)
+  sql-reserved sql-words sql-constants sql-ops sql-binary-ops sql-type-words
+  sql-aggregates)

@@ -60,31 +60,63 @@ Parser Error: syntax error at or near "2"
 
 ## prompt commands
 
-### .help says what the prompt takes
+### .help lists the topics
 
 ```x
 (sql-eval-line ".help")
 ```
 ---
-```output
-A statement ends with a semicolon and may span lines.
-  .help    this text
-  .tables  the tables there are
-  .quit    leave (.exit and ctrl-d do the same)
+      prompt    The prompt's own commands, each on a line starting with a dot.
+
+### .help TOPIC is one topic in full, in any case
+
+```x
+(sql-eval-line ".help DROP")
 ```
+---
+```output
+drop: A table gone.
+  DROP TABLE [IF EXISTS] name
+For example:
+  DROP TABLE IF EXISTS t;
+```
+
+### a topic there is not
+
+```x
+(sql-eval-line ".help nope")
+```
+---
+    no help on nope; .help lists the topics
 
 ### a command it does not have is named
 
 ```x
-(sql-eval-line ".schema")
+(sql-eval-line ".nope")
 ```
 ---
-    unknown command: .schema; try .help
+    unknown command: .nope; try .help
+
+### .schema is a table as the statement that would make it
+
+```x
+(%seq (sql-eval-line "CREATE OR REPLACE TABLE prices (item VARCHAR, price DECIMAL(8,2), n BIGINT);") (sql-eval-line ".schema prices"))
+```
+---
+    CREATE TABLE prices(item VARCHAR, price DECIMAL(8,2), n BIGINT);
+
+### .schema of a table there is not
+
+```x
+(sql-eval-line ".schema nope")
+```
+---
+    Catalog Error: Table with name nope does not exist!
 
 ### .tables names the tables, in order
 
 ```x
-(%seq (sql-eval-line "CREATE OR REPLACE TABLE zebra (a INT); CREATE OR REPLACE TABLE ant (a INT);") (sql-eval-line ".tables"))
+(%seq (sql-eval-line "DROP TABLE IF EXISTS prices; CREATE OR REPLACE TABLE zebra (a INT); CREATE OR REPLACE TABLE ant (a INT);") (sql-eval-line ".tables"))
 ```
 ---
 ```output

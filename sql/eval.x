@@ -84,6 +84,7 @@
       (List third (%sql-row t %sql-type-rows)))))
 
 (def sql-numeric-type? %sql-numeric?)
+(def sql-type-name %sql-type-name)
 
 (def %sql-fits?
   (fn (_ t n)
@@ -754,4 +755,4 @@
 (provide sql/eval
   sql-eval sql-expr-name sql-column-index sql-aggregated? sql-cast
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
-  sql-numeric-type?)
+  sql-type-name sql-numeric-type?)
