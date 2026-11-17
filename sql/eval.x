@@ -6,13 +6,16 @@
 ; @copyright 2026 Jon Ruttan
 ; @license MIT No Attribution (MIT-0)
 ;
-; A value is (TYPE . X): TYPE one of integer, bigint, hugeint, varchar,
-; boolean and null, and X the x value, nil for NULL.  A NULL keeps the type
+; A value is (TYPE . X): TYPE one of integer, bigint, hugeint, double,
+; varchar, boolean and null, or (decimal WIDTH SCALE), and X the x value,
+; nil for NULL.  A decimal's X is its digits as an integer: 1.50 is 150 at
+; scale 2.  A NULL keeps the type
 ; of the expression it came from; the constant NULL has the type null.
 ;
-; Four classes hold what is chosen by a name: SqlNode evaluates an
+; Five classes hold what is chosen by a name: SqlNode evaluates an
 ; expression by its head, SqlName spells one for a column heading, SqlOp
-; applies a binary operator, and SqlAggregate answers for a group of rows.  The name is a symbol the parser made,
+; applies a binary operator, SqlAggregate answers for a group of rows, and
+; SqlCast makes a value one of a type.  The name is a symbol the parser made,
 ; so the lookup is class-static-ref.
 
 (module sql/eval)
@@ -20,7 +23,13 @@
 (import x/type/str)
 (import x/type/class)
 (import x/num/tower)
+(import x/num/float)
 (import sql/words sql-binary-ops sql-aggregates)
+(import sql/lex sql-lex)
+(import sql/number
+  sql-pow10 sql-double-text sql-double-of sql-double-scaled
+  sql-double-integer sql-double-finite? sql-decimal-read sql-rescale
+  sql-decimal-text)
 
 ; --- types -------------------------------------------------------------------
 
@@ -28,18 +37,19 @@
 (def %sql-2^63 (* %sql-2^31 %sql-2^31 2))
 (def %sql-2^127 (* %sql-2^63 %sql-2^63 2))
 
-; An integer type, one past its greatest value, and its name in an error;
-; narrowest first.
+; An integer type, one past its greatest value, its name in an error, and
+; the width of the DECIMAL that holds it; narrowest first.
 (def %sql-int-rows
-  (list (list (lit integer) %sql-2^31 "INT32")
-        (list (lit bigint) %sql-2^63 "INT64")
-        (list (lit hugeint) %sql-2^127 "INT128")))
+  (list (list (lit integer) %sql-2^31 "INT32" 10)
+        (list (lit bigint) %sql-2^63 "INT64" 19)
+        (list (lit hugeint) %sql-2^127 "INT128" 38)))
 
 ; A type, its SQL name, and the name a result's heading shows
 (def %sql-type-rows
   (list (list (lit integer) "INTEGER" "int32")
         (list (lit bigint) "BIGINT" "int64")
         (list (lit hugeint) "HUGEINT" "int128")
+        (list (lit double) "DOUBLE" "double")
         (list (lit varchar) "VARCHAR" "varchar")
         (list (lit boolean) "BOOLEAN" "boolean")
         (list (lit null) "NULL" "\"null\"")))
@@ -49,10 +59,31 @@
 
 (def %sql-int? (fn (_ t) (not (null? (%sql-row t %sql-int-rows)))))
 (def %sql-limit (fn (_ t) (List second (%sql-row t %sql-int-rows))))
-(def %sql-type-name (fn (_ t) (List second (%sql-row t %sql-type-rows))))
+(def %sql-int-name (fn (_ t) (List third (%sql-row t %sql-int-rows))))
 
-(def sql-integer-type? %sql-int?)
-(def sql-type-heading (fn (_ t) (List third (%sql-row t %sql-type-rows))))
+(def %sql-decimal? (fn (_ t) (pair? t)))
+(def %sql-double? (fn (_ t) (eq? t (lit double))))
+(def %sql-null-type? (fn (_ t) (eq? t (lit null))))
+(def %sql-numeric?
+  (fn (_ t) (or (%sql-int? t) (%sql-decimal? t) (%sql-double? t))))
+
+; The most digits a DECIMAL holds
+(def %sql-decimal-width 38)
+
+(def %sql-decimal-name
+  (fn (_ t) (Str8 str "(" (List second t) "," (List third t) ")")))
+
+(def %sql-type-name
+  (fn (_ t)
+    (if (%sql-decimal? t) (Str8 append "DECIMAL" (%sql-decimal-name t))
+      (List second (%sql-row t %sql-type-rows)))))
+
+(def sql-type-heading
+  (fn (_ t)
+    (if (%sql-decimal? t) (Str8 append "decimal" (%sql-decimal-name t))
+      (List third (%sql-row t %sql-type-rows)))))
+
+(def sql-numeric-type? %sql-numeric?)
 
 (def %sql-fits?
   (fn (_ t n)
@@ -74,18 +105,44 @@
 ; A value as a result shows it
 (def sql-value-text
   (fn (_ v)
-    (let ((x (rest v)))
+    (let ((t (first v)) (x (rest v)))
       (match
         ((null? x) "NULL")
-        ((eq? (first v) (lit boolean)) (if x "true" "false"))
-        ((eq? (first v) (lit varchar)) x)
+        ((eq? t (lit boolean)) (if x "true" "false"))
+        ((eq? t (lit varchar)) x)
+        ((%sql-double? t) (sql-double-text x))
+        ((%sql-decimal? t) (sql-decimal-text x (List second t) (List third t)))
         (#t (Str8 str x))))))
 
 (def %sql-null? (fn (_ v) (null? (rest v))))
 
+; --- numbers of unlike types -------------------------------------------------
+
+; The (WIDTH SCALE) of an exact number's type: a decimal's own, and for an
+; integer the decimal that holds its type
+(def %sql-shape
+  (fn (_ t)
+    (if (%sql-decimal? t) (rest t)
+      (list (List ref 3 (%sql-row t %sql-int-rows)) 0))))
+
+; Integers below this are doubles exactly
+(def %sql-2^53 9007199254740992)
+
+; A number as a double.  A wide integer and a decimal go through their
+; text, which the platform's reader rounds once.
+(def %sql-as-double
+  (fn (_ v)
+    (let ((t (first v)) (x (rest v)))
+      (match
+        ((%sql-double? t) x)
+        ((%sql-decimal? t)
+          (sql-double-of (sql-decimal-text x (+ (List second t) 1) (List third t))))
+        ((and (< x %sql-2^53) (> x (- 0 %sql-2^53))) (Float from x))
+        (#t (sql-double-of (Str8 str x)))))))
+
 ; --- arithmetic --------------------------------------------------------------
 
-; The type of an arithmetic result: the wider operand's.  A NULL constant
+; The type of integer arithmetic: the wider operand's.  A NULL constant
 ; takes the other operand's type, and two of them are a BIGINT, as DuckDB
 ; has it.
 (def %sql-arith-type
@@ -93,9 +150,9 @@
     (let ((ta (first a)) (tb (first b)))
       (match
         ((and (%sql-int? ta) (%sql-int? tb)) (%sql-wider ta tb))
-        ((and (%sql-int? ta) (eq? tb (lit null))) ta)
-        ((and (eq? ta (lit null)) (%sql-int? tb)) tb)
-        ((and (eq? ta (lit null)) (eq? tb (lit null))) (lit bigint))
+        ((and (%sql-int? ta) (%sql-null-type? tb)) ta)
+        ((and (%sql-null-type? ta) (%sql-int? tb)) tb)
+        ((and (%sql-null-type? ta) (%sql-null-type? tb)) (lit bigint))
         (#t
           (error (Str8 str "Binder Error: No function matches the given name and argument types '"
                            sign "(" (%sql-type-name ta) ", " (%sql-type-name tb) ")'.")))))))
@@ -105,17 +162,83 @@
   (fn (_ t r word sign a b)
     (if (%sql-fits? t r) (pair t r)
       (error (Str8 str "Out of Range Error: Overflow in " word " of "
-                       (List third (%sql-row t %sql-int-rows))
+                       (%sql-int-name t)
                        " (" (rest a) " " sign " " (rest b) ")!")))))
 
-(def %sql-arith
+(def %sql-integer-arith
   (fn (_ sign word f a b)
     (let ((t (%sql-arith-type sign a b)))
       (if (or (%sql-null? a) (%sql-null? b)) (pair t ())
         (%sql-checked t (f (rest a) (rest b)) word sign a b)))))
 
+; A double: both operands as doubles.  An overflow is an infinity.
+(def %sql-double-arith
+  (fn (_ f a b)
+    (pair (lit double)
+      (if (or (%sql-null? a) (%sql-null? b)) ()
+        (f (%sql-as-double a) (%sql-as-double b))))))
+
+(def %sql-max (fn (_ a b) (if (> a b) a b)))
+(def %sql-min (fn (_ a b) (if (< a b) a b)))
+
+; The (WIDTH SCALE) DuckDB gives decimal arithmetic.  A product has the
+; widths and the scales added.  A sum has the wider scale and room for the
+; wider whole part and a carry.  Neither is wider than a DECIMAL can be.
+(def %sql-decimal-shape
+  (fn (_ sign a b)
+    (if (str=? sign "*")
+      (list (%sql-min %sql-decimal-width (+ (first a) (first b)))
+            (+ (List second a) (List second b)))
+      (let ((scale (%sql-max (List second a) (List second b))))
+        (list (%sql-min %sql-decimal-width
+                (+ (%sql-max (- (first a) (List second a))
+                             (- (first b) (List second b)))
+                   scale 1))
+              scale)))))
+
+; Exact arithmetic with a decimal in it.  A NULL constant for an operand
+; makes the result one, as DuckDB has it.
+(def %sql-decimal-arith
+  (fn (_ sign word f a b)
+    (if (or (%sql-null-type? (first a)) (%sql-null-type? (first b)))
+      (pair (lit null) ())
+      (let ((sa (%sql-shape (first a))) (sb (%sql-shape (first b))))
+        (let ((shape (%sql-decimal-shape sign sa sb)))
+          (when (> (List second shape) %sql-decimal-width)
+            (error (Str8 str "Not implemented Error: a scale of " (List second shape))))
+          (pair (pair (lit decimal) shape)
+            (if (or (%sql-null? a) (%sql-null? b)) ()
+              (let ((r (if (str=? sign "*") (* (rest a) (rest b))
+                         (f (sql-rescale (rest a) (List second sa) (List second shape))
+                            (sql-rescale (rest b) (List second sb) (List second shape))))))
+                (if (and (< r (sql-pow10 (first shape)))
+                         (> r (- 0 (sql-pow10 (first shape)))))
+                  r
+                  (error (Str8 str "Out of Range Error: Overflow in " word " of DECIMAL("
+                                   (first shape) "," (List second shape) ")")))))))))))
+
+(def %sql-numeric-or-null?
+  (fn (_ t) (or (%sql-numeric? t) (%sql-null-type? t))))
+
+; + - or *: integers in the wider type, a double when either is one, and
+; exactly as a decimal otherwise
+(def %sql-arith
+  (fn (_ sign word f a b)
+    (let ((ta (first a)) (tb (first b)))
+      (match
+        ((not (and (%sql-numeric-or-null? ta) (%sql-numeric-or-null? tb)))
+          (%sql-arith-type sign a b))
+        ((or (%sql-double? ta) (%sql-double? tb)) (%sql-double-arith f a b))
+        ((or (%sql-decimal? ta) (%sql-decimal? tb))
+          (%sql-decimal-arith sign word f a b))
+        (#t (%sql-integer-arith sign word f a b))))))
+
+; // or %: integers only
 (def %sql-divide
   (fn (_ sign f a b name)
+    (when (or (%sql-double? (first a)) (%sql-double? (first b))
+              (%sql-decimal? (first a)) (%sql-decimal? (first b)))
+      (error (Str8 str "Not implemented Error: " sign " on a number that is not an integer")))
     (let ((t (%sql-arith-type sign a b)))
       (match
         ((or (%sql-null? a) (%sql-null? b)) (pair t ()))
@@ -123,6 +246,13 @@
           (error (Str8 str "Invalid Input Error: Division by zero in expression "
                            name ".")))
         (#t (%sql-checked t (f (rest a) (rest b)) "division" sign a b))))))
+
+; /: always a double
+(def %sql-quotient
+  (fn (_ a b)
+    (if (and (%sql-numeric-or-null? (first a)) (%sql-numeric-or-null? (first b)))
+      (%sql-double-arith / a b)
+      (%sql-arith-type "/" a b))))
 
 ; --- comparison --------------------------------------------------------------
 
@@ -133,6 +263,15 @@
       (match
         ((and (%sql-int? ta) (%sql-int? tb))
           (if (< x y) -1 (if (= x y) 0 1)))
+        ((and (%sql-numeric? ta) (%sql-numeric? tb))
+          (if (or (%sql-double? ta) (%sql-double? tb))
+            (let ((fx (%sql-as-double a)) (fy (%sql-as-double b)))
+              (if (< fx fy) -1 (if (= fx fy) 0 1)))
+            (let ((scale (%sql-max (List second (%sql-shape ta))
+                                   (List second (%sql-shape tb)))))
+              (let ((sx (sql-rescale x (List second (%sql-shape ta)) scale))
+                    (sy (sql-rescale y (List second (%sql-shape tb)) scale)))
+                (if (< sx sy) -1 (if (= sx sy) 0 1))))))
         ((and (eq? ta (lit varchar)) (eq? tb (lit varchar)))
           (if (Str8 <? x y) -1 (if (Str8 =? x y) 0 1)))
         ((and (eq? ta (lit boolean)) (eq? tb (lit boolean)))
@@ -157,6 +296,9 @@
         ((null? x) ())
         ((eq? t (lit boolean)) x)
         ((%sql-int? t) (not (= x 0)))
+        ((%sql-numeric? t)
+          (error (Str8 str "Not implemented Error: a " (%sql-type-name t)
+                           " as a truth value")))
         (#t (error (Str8 str "Conversion Error: Could not convert string '"
                              x "' to BOOL")))))))
 
@@ -171,8 +313,7 @@
       (%sql-divide "//" (fn (_ x y) (Num quotient x y)) a b name))
     (method mod (self a b name)
       (%sql-divide "%" (fn (_ x y) (Num remainder x y)) a b name))
-    (method div (self a b name)
-      (error "Not implemented Error: / answers a DOUBLE, which is not built; // divides integers"))
+    (method div (self a b name) (%sql-quotient a b))
     ; A NULL constant for an operand makes the result one, as DuckDB has it
     (method concat (self a b name)
       (if (or (eq? (first a) (lit null)) (eq? (first b) (lit null)))
@@ -296,6 +437,21 @@
         (error (Str8 str "Binder Error: No function matches the given name and argument types '"
                          (sql-expr-name node) "'."))))))
 
+(def %sql-no-function
+  (fn (_ node t)
+    (error (Str8 str "Binder Error: No function matches the given name and argument types '"
+                     (Str8 downcase (List second node)) "(" (%sql-type-name t) ")'."))))
+
+; The exact sum of VALUES as a T, which holds less than LIMIT either way;
+; NULL when there are none
+(def %sql-total
+  (fn (_ t values limit)
+    (if (null? values) (pair t ())
+      (let ((total (List fold (fn (_ acc v) (+ acc (rest v))) 0 values)))
+        (if (and (< total limit) (> total (- 0 limit))) (pair t total)
+          (error (Str8 str "Out of Range Error: Overflow in sum of "
+                           (%sql-type-name t))))))))
+
 (def-class SqlAggregate ()
   (static
     (method count (self node scope)
@@ -307,14 +463,30 @@
                 (List length (%sql-values node scope)))))))
     (method sum (self node scope)
       (%sql-one-argument node)
-      (unless (%sql-int? (%sql-arg-type node scope))
-        (error (Str8 str "Binder Error: No function matches the given name and argument types 'sum("
-                         (%sql-type-name (%sql-arg-type node scope)) ")'.")))
-      (let ((values (%sql-values node scope)))
-        (if (null? values) (pair (lit hugeint) ())
-          (let ((total (List fold (fn (_ acc v) (+ acc (rest v))) 0 values)))
-            (if (%sql-fits? (lit hugeint) total) (pair (lit hugeint) total)
-              (error "Out of Range Error: Overflow in HUGEINT addition"))))))
+      (let ((t (%sql-arg-type node scope)) (values (%sql-values node scope)))
+        (match
+          ((%sql-int? t)
+            (%sql-total (lit hugeint) values (%sql-limit (lit hugeint))))
+          ((%sql-decimal? t)
+            (%sql-total (list (lit decimal) %sql-decimal-width (List third t))
+                        values (sql-pow10 %sql-decimal-width)))
+          ((%sql-double? t)
+            (pair t (if (null? values) ()
+                      (List fold (fn (_ acc v) (+ acc (rest v)))
+                                 (rest (first values)) (rest values)))))
+          (#t (%sql-no-function node t)))))
+    (method avg (self node scope)
+      (%sql-one-argument node)
+      (let ((t (%sql-arg-type node scope)) (values (%sql-values node scope)))
+        (unless (%sql-numeric? t) (%sql-no-function node t))
+        (pair (lit double)
+          (if (null? values) ()
+            (/ (if (%sql-double? t)
+                 (List fold (fn (_ acc v) (+ acc (rest v)))
+                            (rest (first values)) (rest values))
+                 (%sql-as-double
+                   (pair t (List fold (fn (_ acc v) (+ acc (rest v))) 0 values))))
+               (Float from (List length values)))))))
     (method min (self node scope)
       (%sql-one-argument node)
       (%sql-extreme node scope (fn (_ c) (< c 0))))
@@ -326,6 +498,14 @@
   (static
     (method int (self node scope)
       (pair (%sql-int-type (List second node)) (List second node)))
+    (method dec (self node scope)
+      (pair (list (lit decimal) (List third node) (List ref 3 node))
+            (List second node)))
+    (method dbl (self node scope)
+      (pair (lit double) (sql-double-of (List second node))))
+    (method cast (self node scope)
+      (pair (List third node)
+            (sql-cast (sql-eval (List second node) scope) (List third node))))
     (method str (self node scope) (pair (lit varchar) (List second node)))
     (method bool (self node scope) (pair (lit boolean) (List second node)))
     (method null (self node scope) (pair (lit null) ()))
@@ -350,9 +530,16 @@
           (#t (aggregate SqlAggregate node scope)))))
     (method neg (self node scope)
       (let ((v (sql-eval (List second node) scope)))
-        (let ((t (%sql-arith-type "-" v v)))
-          (if (%sql-null? v) (pair t ())
-            (%sql-checked t (- 0 (rest v)) "negation" "-" (pair t 0) v)))))
+        (match
+          ((or (%sql-double? (first v)) (%sql-decimal? (first v)))
+            (pair (first v)
+              (if (%sql-null? v) ()
+                (if (%sql-double? (first v)) (- (Float from 0) (rest v))
+                  (- 0 (rest v))))))
+          (#t
+            (let ((t (%sql-arith-type "-" v v)))
+              (if (%sql-null? v) (pair t ())
+                (%sql-checked t (- 0 (rest v)) "negation" "-" (pair t 0) v)))))))
     (method not (self node scope)
       (let ((v (%sql-truth (sql-eval (List second node) scope))))
         (pair (lit boolean) (if (null? v) () (not v)))))
@@ -389,6 +576,11 @@
 (def-class SqlName ()
   (static
     (method int (self node) (Str8 str (List second node)))
+    (method dec (self node) (List ref 4 node))
+    (method dbl (self node) (List second node))
+    (method cast (self node)
+      (Str8 append "CAST(" (sql-expr-name (List second node)) " AS "
+                   (List ref 3 node) ")"))
     (method str (self node)
       (Str8 append "'" (Str8 replace "'" "''" (List second node)) "'"))
     (method bool (self node) (if (List second node) "true" "false"))
@@ -427,42 +619,133 @@
 
 ; --- casts -------------------------------------------------------------------
 
-; The integer TEXT spells, or nil: an optional sign, then digits
-(def %sql-text-integer
+; The number TEXT spells, as (NEGATIVE BODY KIND), or nil: blanks around
+; it, a sign, and one number as the lexer reads one, KIND 1 an integer and
+; 2 one with a point or an exponent
+(def %sql-number-text
   (fn (_ text)
-    (let ((n (Str8 length text)))
-      (let ((signed (and (> n 0) (or (Str8 starts? "-" text) (Str8 starts? "+" text)))))
-        (let ((start (if signed 1 0)))
-          (if (>= start n) ()
-            ((fn (self i acc)
-               (if (>= i n) (if (Str8 starts? "-" text) (- 0 acc) acc)
-                 (let ((d (- (Char ->int (Str8 ref i text)) 48)))
-                   (if (and (>= d 0) (<= d 9)) (self (+ i 1) (+ (* acc 10) d)) ()))))
-             start 0)))))))
+    (let ((trimmed (Str8 trim text)))
+      (let ((negative (Str8 starts? "-" trimmed)))
+        (let ((body (if (or negative (Str8 starts? "+" trimmed))
+                      (Str8 sub 1 (Str8 length trimmed) trimmed)
+                      trimmed)))
+          (let ((tokens (sql-lex body)))
+            (if (and (not (null? tokens)) (null? (rest tokens))
+                     (eq? (first (first tokens)) (lit num))
+                     (< (List third (first tokens)) 3))
+              (list negative body (List third (first tokens)))
+              ())))))))
 
-(def %sql-int-name (fn (_ t) (List third (%sql-row t %sql-int-rows))))
+(def %sql-exponent?
+  (fn (_ body) (or (Str8 includes? "e" body) (Str8 includes? "E" body))))
 
-; The x value of V as the type T holds it, for storing in a column
-(def sql-cast
-  (fn (_ v t)
+(def %sql-no-conversion
+  (fn (_ text name)
+    (error (Str8 str "Conversion Error: Could not convert string '" text
+                     "' to " name))))
+
+(def %sql-out-of-range
+  (fn (_ v name)
+    (error (Str8 str "Conversion Error: Type "
+                     (if (%sql-int? (first v)) (%sql-int-name (first v))
+                       (%sql-type-name (first v)))
+                     " with value " (sql-value-text v)
+                     " can't be cast because the value is out of range for the destination type "
+                     name))))
+
+; V as an integer, before its range is looked at.  Text spells an integer
+; or it is no number; a double's half goes to the even integer and a
+; decimal's away from zero, as DuckDB rounds them.
+(def %sql-integer-of
+  (fn (_ v name)
     (let ((from (first v)) (x (rest v)))
       (match
-        ((null? x) ())
-        ((eq? t (lit varchar)) (sql-value-text v))
-        ((and (%sql-int? from) (%sql-int? t))
-          (if (%sql-fits? t x) x
-            (error (Str8 str "Conversion Error: Type " (%sql-int-name from)
-                             " with value " x
-                             " can't be cast because the value is out of range for the destination type "
-                             (%sql-int-name t)))))
-        ((and (eq? from (lit varchar)) (%sql-int? t))
-          (let ((n (%sql-text-integer (Str8 trim x))))
-            (if (and (not (null? n)) (%sql-fits? t n)) n
-              (error (Str8 str "Conversion Error: Could not convert string '" x
-                               "' to " (%sql-int-name t))))))
-        ((eq? from t) x)
-        (#t (error (Str8 str "Not implemented Error: casting " (%sql-type-name from)
-                             " to " (%sql-type-name t))))))))
+        ((%sql-int? from) x)
+        ((eq? from (lit boolean)) (if x 1 0))
+        ((%sql-double? from)
+          (if (sql-double-finite? x) (sql-double-integer x)
+            (%sql-out-of-range v name)))
+        ((%sql-decimal? from) (sql-rescale x (List third from) 0))
+        ((eq? from (lit varchar))
+          (let ((number (%sql-number-text x)))
+            (if (and (not (null? number)) (= (List third number) 1))
+              (let ((n (first (sql-decimal-read (List second number)))))
+                (if (first number) (- 0 n) n))
+              (%sql-no-conversion x name))))
+        (#t (error (Str8 str "Not implemented Error: casting "
+                             (%sql-type-name from) " to an integer")))))))
+
+(def %sql-cast-integer
+  (fn (_ v t)
+    (let ((n (%sql-integer-of v (%sql-int-name t))))
+      (match
+        ((%sql-fits? t n) n)
+        ((eq? (first v) (lit varchar)) (%sql-no-conversion (rest v) (%sql-int-name t)))
+        (#t (%sql-out-of-range v (%sql-int-name t)))))))
+
+; V as an integer of digits at SCALE, before its width is looked at
+(def %sql-scaled-of
+  (fn (_ v scale name)
+    (let ((from (first v)) (x (rest v)))
+      (match
+        ((%sql-int? from) (* x (sql-pow10 scale)))
+        ((%sql-decimal? from) (sql-rescale x (List third from) scale))
+        ((%sql-double? from)
+          (if (sql-double-finite? x) (sql-double-scaled x scale)
+            (%sql-out-of-range v name)))
+        ((eq? from (lit varchar))
+          (let ((number (%sql-number-text x)))
+            (if (or (null? number) (%sql-exponent? (List second number)))
+              (%sql-no-conversion x name)
+              (let ((read (sql-decimal-read (List second number))))
+                (let ((n (sql-rescale (first read) (List third read) scale)))
+                  (if (first number) (- 0 n) n))))))
+        (#t (error (Str8 str "Not implemented Error: casting "
+                             (%sql-type-name from) " to a decimal")))))))
+
+(def-class SqlCast ()
+  (static
+    (method varchar (self v t) (sql-value-text v))
+    (method integer (self v t) (%sql-cast-integer v t))
+    (method bigint (self v t) (%sql-cast-integer v t))
+    (method hugeint (self v t) (%sql-cast-integer v t))
+    (method double (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((%sql-numeric? from) (%sql-as-double v))
+          ((eq? from (lit varchar))
+            (let ((number (%sql-number-text x)))
+              (if (null? number) (%sql-no-conversion x "DOUBLE")
+                (sql-double-of (Str8 append (if (first number) "-" "")
+                                            (List second number))))))
+          (#t (error (Str8 str "Not implemented Error: casting "
+                               (%sql-type-name from) " to DOUBLE"))))))
+    (method decimal (self v t)
+      (let ((n (%sql-scaled-of v (List third t) (%sql-type-name t)))
+            (limit (sql-pow10 (List second t))))
+        (if (and (< n limit) (> n (- 0 limit))) n
+          (error (Str8 str "Conversion Error: Casting value \"" (sql-value-text v)
+                           "\" to type " (%sql-type-name t)
+                           " failed: value is out of range!")))))
+    (method boolean (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((eq? from (lit boolean)) x)
+          ((%sql-int? from) (not (= x 0)))
+          ((eq? from (lit varchar))
+            (match
+              ((or (Str8 ci=? x "true") (Str8 ci=? x "t")) #t)
+              ((or (Str8 ci=? x "false") (Str8 ci=? x "f")) #f)
+              (#t (%sql-no-conversion x "BOOL"))))
+          (#t (error (Str8 str "Not implemented Error: casting "
+                               (%sql-type-name from) " to BOOLEAN"))))))))
+
+; The x value of V as the type T holds it
+(def sql-cast
+  (fn (_ v t)
+    (if (%sql-null? v) ()
+      ((class-static-ref SqlCast (if (%sql-decimal? t) (lit decimal) t))
+       SqlCast v t))))
 
 (def sql-truth %sql-truth)
 (def sql-order %sql-order)
@@ -471,4 +754,4 @@
 (provide sql/eval
   sql-eval sql-expr-name sql-column-index sql-aggregated? sql-cast
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
-  sql-integer-type?)
+  sql-numeric-type?)

@@ -174,27 +174,14 @@ DuckDB names a constant's type INTEGER_LITERAL here and lists its candidates.
 Binder Error: No function matches the given name and argument types '+(BOOLEAN, INTEGER)'.
 ```
 
-### / is not built
+### // and % are for integers
 
-DuckDB answers the DOUBLE 0.5.  Until there is a DOUBLE this refuses, rather
-than answering an integer.
+DuckDB answers the DOUBLE 3.75, the division with nothing dropped.
 
 ```x
-(sql "SELECT 1 / 2")
+(sql "SELECT 7.5 // 2")
 ```
 ---
 ```output
-Not implemented Error: / answers a DOUBLE, which is not built; // divides integers
-```
-
-### a fraction is not built
-
-DuckDB reads a DECIMAL(2,1).
-
-```x
-(sql "SELECT 1.5")
-```
----
-```output
-Not implemented Error: the number 1.5: only integers are read
+Not implemented Error: // on a number that is not an integer
 ```

@@ -24,10 +24,17 @@ Pre-release: no release has been cut. Paired with x-lang v0.55.0
 What is built:
 
 - **Values.** INTEGER, BIGINT and HUGEINT, each constant the narrowest
-  type that holds it; VARCHAR; BOOLEAN; NULL.
-- **Operators.** `+ - * // %` on integers, in the wider operand's type,
-  an overflow an error; `= == <> != < <= > >=`; `AND OR NOT` in three
+  type that holds it; DECIMAL, exact, a constant with a point taking the
+  width and scale it is written with; DOUBLE, shown in the fewest digits
+  that read back as it; VARCHAR; BOOLEAN; NULL.
+- **Operators.** `+ - *` on any numbers: integers in the wider type with
+  an overflow an error, decimals exactly with DuckDB's widths and scales,
+  a double when either is one. `/` answers a DOUBLE. `// %` on integers.
+  `= == <> != < <= > >=` across the numeric types; `AND OR NOT` in three
   values; `IS [NOT] NULL`; `||`.
+- **Casts.** `CAST(x AS type)` and `x::type` among the numbers, text and
+  booleans, rounding as DuckDB does: a double's half to the even integer,
+  a decimal's away from zero.
 - **Tables.** In memory, for the life of the process: `CREATE [OR
   REPLACE] TABLE [IF NOT EXISTS]`, `INSERT INTO ... VALUES` with or
   without a column list, `DROP TABLE [IF EXISTS]`. A value is cast to its
@@ -39,7 +46,7 @@ What is built:
 - **Joins.** `JOIN ... ON`, `LEFT`, `RIGHT` and `FULL [OUTER] JOIN`,
   `CROSS JOIN`, and tables listed with commas; a table joined to itself
   under two aliases.
-- **Groups.** `count`, `sum`, `min` and `max`, with `DISTINCT` inside a
+- **Groups.** `count`, `sum`, `avg`, `min` and `max`, with `DISTINCT` inside a
   call; `GROUP BY` an expression, an alias, a place in the list, or
   `ALL`; `HAVING`.
 - **Results.** DuckDB's box, a column as wide as its widest text in
@@ -56,7 +63,8 @@ answered differently.
 In this order:
 
 1. Subqueries, `UNION`, `JOIN ... USING`, `UPDATE` and `DELETE`.
-2. DOUBLE and DECIMAL, `/`, casts, and the scalar functions.
+2. The scalar functions, `CASE`, `IN`, `BETWEEN`, `LIKE`, and the
+   remaining types: REAL, the small integers, dates and times.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
    and structs, reading CSV and JSON files by name.
 4. The prompt: statement colouring as it is typed, coloured results,
@@ -80,6 +88,8 @@ it differs and why.
 - A statement that stops short is `syntax error at end of input`; DuckDB
   names the last token it read.
 - Every row of a result is shown; DuckDB cuts a long one to forty rows.
+- `//` and `%` take integers only; DuckDB's `//` on a decimal or a double
+  is its `/`.
 - Groups come in the order their keys first appear; DuckDB promises no
   order.
 - A join compares every pair of rows.

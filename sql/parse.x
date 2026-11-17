@@ -31,6 +31,10 @@
 ;
 ; An expression, its head the name sql/eval's classes know it by:
 ;   (int N)  (str TEXT)  (bool B)  (null)  (col NAME QUALIFIER)
+;   (dec SCALED WIDTH SCALE TEXT)   a number with a point: SCALED its digits
+;                                   as an integer, TEXT as it was written
+;   (dbl TEXT)                      a number with an exponent, as written
+;   (cast E TYPE SHOWN)             SHOWN the type as a heading spells it
 ;   (call NAME ARGS DISTINCT)   ARGS expressions, or one (star ()) in count(*)
 ;   (neg E)  (not E)  (is-null E NEGATED)
 ;   (and A B)  (or A B)
@@ -41,6 +45,7 @@
 (import x/type/str)
 (import sql/words sql-binary-ops sql-type-words)
 (import sql/lex sql-tokenize)
+(import sql/number sql-decimal-read)
 
 (def %sql-near
   (fn (_ ts)
@@ -100,18 +105,88 @@
       (self text (+ i 1) n
             (+ (* acc 10) (- (Char ->int (Str8 ref i text)) 48))))))
 
+; The most digits a DECIMAL holds; a constant of more is a DOUBLE
+(def %sql-decimal-width 38)
+
+; A number as written, of the kind the lexer says: 1 an integer, 2 one
+; with a point or an exponent, 3 hexadecimal
+(def %sql-number
+  (fn (_ text kind)
+    (match
+      ((= kind 1) (list (lit int) (%sql-digits text 0 (Str8 length text) 0)))
+      ((= kind 2)
+        (if (or (Str8 includes? "e" text) (Str8 includes? "E" text))
+          (list (lit dbl) text)
+          (let ((read (sql-decimal-read text)))
+            (if (> (List second read) %sql-decimal-width) (list (lit dbl) text)
+              (list (lit dec) (first read) (List second read) (List third read) text)))))
+      (#t (error (Str8 str "Not implemented Error: the number " text))))))
+
+; A whole number in parentheses or two, as a list; nil and TS as it was
+; when there is no parenthesis
+(def %sql-type-arguments
+  (fn (_ ts)
+    (if (%sql-op? ts "(")
+      (let ((l (%sql-list
+                 (fn (_ ts)
+                   (if (and (not (null? ts)) (eq? (first (first ts)) (lit num))
+                            (= (List third (first ts)) 1))
+                     (pair (%sql-digits (List second (first ts)) 0
+                                        (Str8 length (List second (first ts))) 0)
+                           (rest ts))
+                     (%sql-near ts)))
+                 (rest ts))))
+        (if (%sql-op? (rest l) ")") (pair (first l) (rest (rest l)))
+          (%sql-near (rest l))))
+      (pair () ts))))
+
+; DuckDB's DECIMAL with no width and scale
+(def %sql-decimal-default (list 18 3))
+
+; A type: ((TYPE SHOWN) . tokens-left).  A DECIMAL is (decimal WIDTH SCALE),
+; the scale 0 when only a width is written.  A VARCHAR's length says
+; nothing.  SHOWN is the name and what was in parentheses after it.
+(def %sql-type
+  (fn (_ ts)
+    (when (null? ts) (%sql-near ts))
+    (let ((row (List find
+                 (fn (_ r) (str=? (first r) (Str8 upcase (List second (first ts)))))
+                 sql-type-words))
+          (args (%sql-type-arguments (rest ts))))
+      (when (null? row)
+        (error (Str8 str "Not implemented Error: the type " (List second (first ts)))))
+      (let ((given (first args))
+            (shown (Str8 append
+                     (if (null? (List third row)) (List second (first ts)) (List third row))
+                     (if (null? (first args)) ""
+                       (Str8 append "("
+                         (Str8 join ", " (List map (fn (_ n) (Str8 str n)) (first args)))
+                         ")")))))
+        (pair (list (if (eq? (List second row) (lit decimal))
+                      (pair (lit decimal)
+                        (match ((null? given) %sql-decimal-default)
+                               ((null? (rest given)) (list (first given) 0))
+                               (#t given)))
+                      (List second row))
+                    shown)
+              (rest args))))))
+
 (def %sql-primary
   (fn (_ ts)
     (if (null? ts) (%sql-near ts)
       (let ((tok (first ts)))
         (let ((tag (first tok)) (text (List second tok)))
           (match
-            ((eq? tag (lit num))
-              (if (= (List third tok) 1)
-                (pair (list (lit int) (%sql-digits text 0 (Str8 length text) 0))
-                      (rest ts))
-                (error (Str8 str "Not implemented Error: the number " text
-                                 ": only integers are read"))))
+            ((eq? tag (lit num)) (pair (%sql-number text (List third tok)) (rest ts)))
+            ((and (%sql-word? ts "CAST") (%sql-op? (rest ts) "("))
+              (let ((e (%sql-expr (rest (rest ts)))))
+                (if (%sql-kw? (rest e) "AS")
+                  (let ((type (%sql-type (rest (rest e)))))
+                    (if (%sql-op? (rest type) ")")
+                      (pair (pair (lit cast) (pair (first e) (first type)))
+                            (rest (rest type)))
+                      (%sql-near (rest type))))
+                  (%sql-near (rest e)))))
             ((eq? tag (lit str)) (pair (list (lit str) text) (rest ts)))
             ((%sql-kw? ts "NULL") (pair (list (lit null)) (rest ts)))
             ((%sql-kw? ts "TRUE") (pair (list (lit bool) #t) (rest ts)))
@@ -147,19 +222,38 @@
                     (rest (rest args)))
               (%sql-near (rest args)))))))))
 
-; A sign.  A minus on an integer constant is the constant, so the least
-; INTEGER is one.
+; A primary and the casts written after it with ::
+(def %sql-postfix
+  (fn (_ ts)
+    (let ((e (%sql-primary ts)))
+      ((fn (self left ts)
+         (if (%sql-op? ts "::")
+           (let ((type (%sql-type (rest ts))))
+             (self (pair (lit cast) (pair left (first type))) (rest type)))
+           (pair left ts)))
+       (first e) (rest e)))))
+
+; A constant with a minus before it: the constant, so the least INTEGER is
+; one and -1.5 is headed as written
+(def %sql-negated
+  (fn (_ e)
+    (match
+      ((eq? (first e) (lit int)) (list (lit int) (- 0 (List second e))))
+      ((eq? (first e) (lit dec))
+        (list (lit dec) (- 0 (List second e)) (List third e) (List ref 3 e)
+              (Str8 append "-" (List ref 4 e))))
+      ((eq? (first e) (lit dbl)) (list (lit dbl) (Str8 append "-" (List second e))))
+      (#t (list (lit neg) e)))))
+
+; A sign
 (def %sql-unary
   (fn (self ts)
     (match
       ((%sql-op? ts "-")
         (let ((r (self (rest ts))))
-          (pair (if (eq? (first (first r)) (lit int))
-                  (list (lit int) (- 0 (List second (first r))))
-                  (list (lit neg) (first r)))
-                (rest r))))
+          (pair (%sql-negated (first r)) (rest r))))
       ((%sql-op? ts "+") (self (rest ts)))
-      (#t (%sql-primary ts)))))
+      (#t (%sql-postfix ts)))))
 
 ; Operands NEXT reads, joined left to right by the operators OPS
 (def %sql-binary
@@ -416,20 +510,13 @@
 ; A column of CREATE TABLE: its name and its type
 (def %sql-column
   (fn (_ ts)
-    (let ((name (%sql-name ts)) (after (rest ts)))
-      (when (null? after) (%sql-near after))
-      (let ((row (List find
-                   (fn (_ r) (str=? (first r) (Str8 upcase (List second (first after)))))
-                   sql-type-words)))
-        (when (null? row)
-          (error (Str8 str "Not implemented Error: the type "
-                           (List second (first after)))))
-        (unless (or (%sql-op? (rest after) ",") (%sql-op? (rest after) ")"))
-          (if (null? (rest after)) (%sql-near (rest after))
-            (error (Str8 str "Not implemented Error: "
-                             (List second (first (rest after)))
-                             " in a column definition"))))
-        (pair (list name (List second row)) (rest after))))))
+    (let ((name (%sql-name ts)) (type (%sql-type (rest ts))))
+      (unless (or (%sql-op? (rest type) ",") (%sql-op? (rest type) ")"))
+        (if (null? (rest type)) (%sql-near (rest type))
+          (error (Str8 str "Not implemented Error: "
+                           (List second (first (rest type)))
+                           " in a column definition"))))
+      (pair (list name (first (first type))) (rest type)))))
 
 ; A list READ reads, in parentheses
 (def %sql-parenthesized
