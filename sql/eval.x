@@ -22,6 +22,7 @@
 (import x/type/list)
 (import x/type/str)
 (import x/type/class)
+(import x/type/dict)
 (import x/num/tower)
 (import x/num/float)
 (import sql/words sql-lower sql-same-name? sql-binary-ops sql-aggregates)
@@ -377,7 +378,8 @@
                (if (null? scope) ()
                  (list (first scope)
                        (List repeat (List length (first scope)) ())
-                       (List third scope))))))))
+                       (List third scope)
+                       (%sql-fourth scope))))))))
 
 ; --- LIKE --------------------------------------------------------------------
 
@@ -637,11 +639,46 @@
 
 ; --- expressions -------------------------------------------------------------
 
-; NODE's value in SCOPE: nil where there is no FROM, else
-; (COLUMNS ROW GROUP).  COLUMNS is a list of (QUALIFIER NAME TYPE) and ROW
-; their x values.  GROUP is nil for a row of the tables, and for a group of
-; rows a one-element list holding the group's scopes, ROW then being the
-; first of them, or NULLs when the group is empty.
+; NODE's value in SCOPE: nil where there is no FROM and no statement
+; around this one, else (COLUMNS ROW GROUP OUTER).  COLUMNS is a list of
+; columns and ROW their x values.  GROUP is nil for a row of the tables,
+; and for a group of rows a one-element list holding the group's scopes,
+; ROW then being the first of them, or NULLs when the group is empty.
+; OUTER is the scope of the row a subquery is being answered for, nil at
+; the top: a name no column here has is looked for there.
+(def sql-scope (fn (_ columns row group outer) (list columns row group outer)))
+
+; A subquery is run by the executor, which reads this module and so cannot
+; be read by it: the executor leaves its function here
+(def %sql-hooks (Dict make))
+
+(def sql-select-runner!
+  (fn (_ run) (%sql-hooks set! (lit select) run)))
+
+; A select statement's result, (NAMES TYPES ROWS), for the row of SCOPE
+(def %sql-subresult
+  (fn (_ stmt scope) ((%sql-hooks get (lit select)) stmt scope)))
+
+; The one column of a subquery's result, as a list of values; its type
+; comes first: (TYPE . VALUES)
+(def %sql-subcolumn
+  (fn (_ stmt scope)
+    (let ((result (%sql-subresult stmt scope)))
+      (unless (= (List length (first result)) 1)
+        (error (Str8 str "Binder Error: Subquery returns " (List length (first result))
+                         " columns - expected 1")))
+      (pair (first (List second result)) (List map first (List third result))))))
+
+; V IN the values AMONG, in three values
+(def %sql-among
+  (fn (_ v among)
+    (pair (lit boolean)
+      (match
+        ((%sql-null? v) ())
+        ((List any? (fn (_ a) (and (not (%sql-null? a)) (= (%sql-order v a) 0))) among) #t)
+        ((List any? %sql-null? among) ())
+        (#t #f)))))
+
 (def sql-eval
   (fn (_ node scope)
     ((class-static-ref SqlNode (first node)) SqlNode node scope)))
@@ -716,18 +753,21 @@
   (fn (_ node)
     (and (eq? (first node) (lit call)) (%sql-aggregate? (List second node)))))
 
-; NODE holds a call to an aggregate, at any depth
+; NODE holds a call to an aggregate, at any depth of its own statement: a
+; subquery's aggregates are the subquery's
 (def sql-aggregated?
   (fn (self node)
-    (if (pair? node)
-      (if (and (eq? (first node) (lit call)) (%sql-aggregate? (List second node)))
-        #t
-        (List any? self node))
-      #f)))
+    (match
+      ((not (pair? node)) #f)
+      ((sql-aggregate-call? node) #t)
+      ((or (eq? (first node) (lit subquery)) (eq? (first node) (lit exists))) #f)
+      ((eq? (first node) (lit in-query)) (self (List second node)))
+      (#t (List any? self node)))))
 
 ; A scope of a group as a scope of its first row, for what is not
 ; aggregated
-(def %sql-plain (fn (_ scope) (list (first scope) (List second scope) ())))
+(def %sql-plain
+  (fn (_ scope) (list (first scope) (List second scope) () (%sql-fourth scope))))
 
 ; The values ARG has over a group's rows, the NULLs left out, and each
 ; value once when DISTINCT
@@ -847,9 +887,13 @@
       (if (null? scope)
         (error (Str8 str "Binder Error: Referenced column \"" (List second node)
                          "\" was not found because the FROM clause is missing"))
-        (let ((i (sql-column-index node (first scope))))
-          (pair (first (rest (rest (%sql-nth (first scope) i))))
-                (%sql-nth (first (rest scope)) i)))))
+        (let ((places (%sql-column-places (%sql-fourth node) (%sql-fifth node) (first scope) 0)))
+          (if (and (null? places) (not (null? (%sql-fourth scope))))
+            (sql-eval node (%sql-fourth scope))
+            (let ((i (if (and (not (null? places)) (null? (rest places))) (first places)
+                       (sql-column-index node (first scope)))))
+              (pair (first (rest (rest (%sql-nth (first scope) i))))
+                    (%sql-nth (first (rest scope)) i)))))))
     (method call (self node scope)
       (let ((aggregate (class-static-ref SqlAggregate
                          (Str8 ->sym (sql-lower (List second node))))))
@@ -883,14 +927,20 @@
             ((null? otherwise) (pair (if (%sql-null-type? t) (lit integer) t) ()))
             (#t (%sql-as (sql-eval otherwise scope) t))))))
     (method in (self node scope)
-      (let ((v (sql-eval (List second node) scope))
-            (among (List map (fn (_ e) (sql-eval e scope)) (List third node))))
-        (pair (lit boolean)
-          (match
-            ((%sql-null? v) ())
-            ((List any? (fn (_ a) (and (not (%sql-null? a)) (= (%sql-order v a) 0))) among) #t)
-            ((List any? %sql-null? among) ())
-            (#t #f)))))
+      (%sql-among (sql-eval (List second node) scope)
+                  (List map (fn (_ e) (sql-eval e scope)) (List third node))))
+    (method in-query (self node scope)
+      (%sql-among (sql-eval (List second node) scope)
+                  (rest (%sql-subcolumn (List third node) scope))))
+    (method exists (self node scope)
+      (pair (lit boolean)
+            (not (null? (List third (%sql-subresult (List second node) scope))))))
+    (method subquery (self node scope)
+      (let ((column (%sql-subcolumn (List second node) scope)))
+        (match
+          ((null? (rest column)) (pair (first column) ()))
+          ((null? (rest (rest column))) (first (rest column)))
+          (#t (error "Invalid Input Error: More than one row returned by a subquery used as an expression - scalar subqueries can only return a single row.")))))
     (method between (self node scope)
       (let ((v (sql-eval (List second node) scope)))
         (let ((low (rest (%sql-compare v (sql-eval (List third node) scope) (fn (_ c) (>= c 0)))))
@@ -960,6 +1010,45 @@
     (let ((own (List find (fn (_ row) (str=? (first row) (sql-lower name))) %sql-call-names)))
       (if (null? own) (sql-lower name) (rest own)))))
 
+; A select statement spelled out for a heading, as DuckDB spells one back:
+; its items, its tables, and the clauses after
+(def %sql-select-text
+  (fn (_ stmt)
+    (if (eq? (first stmt) (lit with)) (Str8 append "WITH ... " (%sql-select-text (List third stmt)))
+      (let ((clause (fn (_ word e) (if (null? e) "" (Str8 append " " word " " (sql-expr-name e))))))
+        (Str8 append "SELECT "
+          (if (List ref 9 stmt) "DISTINCT " "")
+          (Str8 join ", "
+            (List map
+              (fn (_ i)
+                (Str8 append (sql-expr-name (first i))
+                  (if (null? (List second i)) "" (Str8 append " AS " (List second i)))))
+              (List second stmt)))
+          (if (null? (List third stmt)) ""
+            (Str8 append " FROM "
+              (Str8 join ", "
+                (List map
+                  (fn (_ source)
+                    (let ((named (if (symbol? (first source)) (rest source) source)))
+                      (Str8 append
+                        (if (pair? (first named))
+                          (Str8 append "(" (%sql-select-text (first named)) ")")
+                          (first named))
+                        (if (null? (List second named)) ""
+                          (Str8 append " AS " (List second named))))))
+                  (List third stmt)))))
+          (clause "WHERE" (List ref 3 stmt))
+          (if (or (null? (List ref 7 stmt)) (eq? (List ref 7 stmt) (lit all))) ""
+            (Str8 append " GROUP BY "
+              (Str8 join ", " (List map sql-expr-name (List ref 7 stmt)))))
+          (clause "HAVING" (List ref 8 stmt))
+          (if (null? (List ref 4 stmt)) ""
+            (Str8 append " ORDER BY "
+              (Str8 join ", "
+                (List map (fn (_ term) (sql-expr-name (first term))) (List ref 4 stmt)))))
+          (clause "LIMIT" (List ref 5 stmt))
+          (clause "OFFSET" (List ref 6 stmt)))))))
+
 (def-class SqlName ()
   (static
     (method int (self node) (Str8 str (List second node)))
@@ -1000,7 +1089,15 @@
     (method col (self node)
       (if (null? (List third node)) (List second node)
         (Str8 append (List third node) "." (List second node))))
-    (method star (self node) "*")
+    (method star (self node)
+      (if (null? (List second node)) "*" (Str8 append (List second node) ".*")))
+    (method subquery (self node)
+      (Str8 append "(" (%sql-select-text (List second node)) ")"))
+    (method in-query (self node)
+      (Str8 append "(" (sql-expr-name (List second node)) " = ANY("
+                   (%sql-select-text (List third node)) "))"))
+    (method exists (self node)
+      (Str8 append "EXISTS(" (%sql-select-text (List second node)) ")"))
     (method call (self node)
       (let ((args (List third node)))
         (if (and (%sql-aggregate? (List second node))
@@ -1118,6 +1215,10 @@
 (def-class SqlCast ()
   (static
     (method varchar (self v t) (sql-value-text v))
+    ; A column with no type, as a table made from a NULL constant has,
+    ; holds only NULLs
+    (method null (self v t)
+      (error "Not implemented Error: a value for a column of no type"))
     (method integer (self v t) (%sql-cast-integer v t))
     (method bigint (self v t) (%sql-cast-integer v t))
     (method hugeint (self v t) (%sql-cast-integer v t))
@@ -1164,7 +1265,8 @@
 (def sql-null? %sql-null?)
 
 (provide sql/eval
-  sql-eval sql-expr-name sql-column sql-column-node sql-column-index
+  sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
+  sql-column-node sql-column-index
   sql-aggregated? sql-aggregate-call? sql-common-type sql-cast
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type?)

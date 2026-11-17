@@ -21,7 +21,8 @@
 (import x/type/dict)
 (import sql/words sql-lower sql-same-name?)
 (import sql/eval
-  sql-eval sql-expr-name sql-column sql-column-node sql-column-index
+  sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
+  sql-column-node sql-column-index
   sql-aggregated? sql-aggregate-call? sql-cast
   sql-truth sql-order sql-null? sql-value-text)
 
@@ -52,14 +53,36 @@
 ; What FROM reads is (COLUMNS . ROWS): COLUMNS a list of
 ; sql/eval's columns, ROWS lists of x values.
 
-; One table: the qualifier its alias when it has one, its name when not
+; The tables a WITH names, for the statement being run: a name in lower
+; case to its result.  Emptied where a run begins.
+(def %sql-withs (Dict make))
+
+; A result as what FROM reads, under QUALIFIER
+(def %sql-result-source
+  (fn (_ result qualifier)
+    (pair (List map (fn (_ name type) (sql-column qualifier name type))
+                    (first result) (List second result))
+          (List map (fn (_ row) (List map rest row)) (List third result)))))
+
+; What DuckDB calls a select statement in a FROM that has no alias
+(def %sql-unnamed "unnamed_subquery")
+
+; One table of a FROM: a select statement in parentheses, a table a WITH
+; named, or a table there is.  The qualifier is its alias when it has one
+; and its name when not.
 (def %sql-source
   (fn (_ name alias)
-    (let ((table (%sql-table name)))
-      (let ((qualifier (if (null? alias) (first table) alias)))
-        (pair (List map (fn (_ c) (sql-column qualifier (first c) (List second c)))
-                        (List second table))
-              (List third table))))))
+    (match
+      ((pair? name)
+        (%sql-result-source (%sql-query-result name ()) (if (null? alias) %sql-unnamed alias)))
+      ((%sql-withs has? (%sql-key name))
+        (%sql-result-source (%sql-withs get (%sql-key name)) (if (null? alias) name alias)))
+      (#t
+        (let ((table (%sql-table name)))
+          (let ((qualifier (if (null? alias) (first table) alias)))
+            (pair (List map (fn (_ c) (sql-column qualifier (first c) (List second c)))
+                            (List second table))
+                  (List third table))))))))
 
 (def %sql-nulls (fn (_ columns) (List repeat (List length columns) ())))
 
@@ -98,7 +121,7 @@
         (%sql-join-rows left right kind
           (fn (_ row)
             (if (null? on) #t
-              (eq? (sql-truth (sql-eval on (list columns row ()))) #t))))))))
+              (eq? (sql-truth (sql-eval on (sql-scope columns row () ()))) #t))))))))
 
 ; Every table of a FROM, each joined to what is before it
 (def %sql-from
@@ -271,6 +294,8 @@
     (match
       ((List any? (fn (_ k) (%sql-same? e k columns)) keys) ())
       ((sql-aggregate-call? e) ())
+      ((or (eq? (first e) (lit subquery)) (eq? (first e) (lit exists))) ())
+      ((eq? (first e) (lit in-query)) (self (List second e) keys columns))
       ((eq? (first e) (lit col))
         (error (Str8 str "Binder Error: column \"" (List second e)
                          "\" must appear in the GROUP BY clause or must be part of an aggregate function.")))
@@ -289,18 +314,19 @@
 ; The scope of one group: its first row, or NULLs when it has none, and
 ; its rows' scopes
 (def %sql-group-scope
-  (fn (_ columns members)
-    (list columns
-          (if (or (null? members) (null? (first members))) (%sql-nulls columns)
-            (List second (first members)))
-          (list members))))
+  (fn (_ columns members outer)
+    (sql-scope columns
+               (if (or (null? members) (null? (first members))) (%sql-nulls columns)
+                 (List second (first members)))
+               (list members)
+               outer)))
 
 ; SCOPES as a scope a group.  With no keys they are one group, though
 ; there be no row in it.
 (def %sql-groups
-  (fn (_ scopes keys columns)
-    (if (null? keys) (list (%sql-group-scope columns scopes))
-      (List map (fn (_ members) (%sql-group-scope columns members))
+  (fn (_ scopes keys columns outer)
+    (if (null? keys) (list (%sql-group-scope columns scopes outer))
+      (List map (fn (_ members) (%sql-group-scope columns members outer))
         (%sql-partition scopes
           (fn (_ s)
             (%sql-values-key (List map (fn (_ k) (sql-eval k s)) keys))))))))
@@ -348,7 +374,7 @@
                 i)))
           names)))))
 
-; One row for TABLE from EXPRS, a value at each of PLACES and NULL elsewhere
+; One row for TABLE from VALUES, one at each of PLACES and NULL elsewhere
 (def %sql-insert-row
   (fn (_ table places named exprs)
     (let ((columns (List second table)))
@@ -364,8 +390,7 @@
       (let ((given (List map
                      (fn (_ place e)
                        (pair place
-                             (sql-cast (sql-eval e ())
-                                       (List second (List ref place columns)))))
+                             (sql-cast e (List second (List ref place columns)))))
                      places exprs)))
         (List map
           (fn (_ j)
@@ -376,15 +401,19 @@
 ; --- the statements ----------------------------------------------------------
 
 ; The scopes a SELECT's FROM and WHERE leave: a row of the tables each, or
-; one with nothing in it when there is no FROM
+; one with nothing in it when there is no FROM.  OUTER is the scope of the
+; row a subquery is answered for.
 (def %sql-filtered
-  (fn (_ stmt source)
+  (fn (_ stmt source outer)
     (let ((where (List ref 3 stmt)))
       (when (sql-aggregated? where)
         (error "Binder Error: WHERE clause cannot contain aggregates!"))
-      (let ((scopes (if (null? source) (list ())
-                      (List map (fn (_ row) (list (first source) row ()))
-                                (rest source)))))
+      (let ((scopes (match
+                      ((not (null? source))
+                        (List map (fn (_ row) (sql-scope (first source) row () outer))
+                                  (rest source)))
+                      ((null? outer) (list ()))
+                      (#t (list (sql-scope () () () outer))))))
         (if (null? where) scopes
           (List filter (fn (_ s) (eq? (sql-truth (sql-eval where s)) #t))
                        scopes))))))
@@ -393,13 +422,13 @@
 ; and ORDER, what the terms of ORDER BY sort by, are checked against the
 ; keys first.
 (def %sql-grouped
-  (fn (_ stmt items order columns scopes)
+  (fn (_ stmt items order columns scopes outer)
     (let ((keys (%sql-group-keys (List ref 7 stmt) items))
           (having (List ref 8 stmt)))
       (List for-each (fn (_ i) (%sql-check-grouped (first i) keys columns)) items)
       (List for-each (fn (_ e) (%sql-check-grouped e keys columns)) order)
       (unless (null? having) (%sql-check-grouped having keys columns))
-      (let ((groups (%sql-groups scopes keys columns)))
+      (let ((groups (%sql-groups scopes keys columns outer)))
         (if (null? having) groups
           (List filter (fn (_ g) (eq? (sql-truth (sql-eval having g)) #t))
                        groups))))))
@@ -407,11 +436,11 @@
 ; The types of ITEMS' columns when no row shows them: each item's type over
 ; a row of NULLs, a group with no rows when GROUPED
 (def %sql-item-types
-  (fn (_ items columns grouped)
+  (fn (_ items columns grouped outer)
     (let ((scope (match
-                   (grouped (%sql-group-scope columns ()))
-                   ((null? columns) ())
-                   (#t (list columns (%sql-nulls columns) ())))))
+                   (grouped (%sql-group-scope columns () outer))
+                   ((and (null? columns) (null? outer)) ())
+                   (#t (sql-scope columns (%sql-nulls columns) () outer)))))
       (List map (fn (_ i) (first (sql-eval (first i) scope))) items))))
 
 ; ROWS with each row once, when DISTINCT
@@ -419,54 +448,139 @@
   (fn (_ rows distinct)
     (if distinct (List map first (%sql-partition rows %sql-values-key)) rows)))
 
+; A SELECT's result, (NAMES TYPES ROWS) with each row a list of values, for
+; the row of OUTER when it is a subquery
+(def %sql-select-result
+  (fn (_ stmt outer)
+    (let ((source (if (null? (List third stmt)) () (%sql-from (List third stmt)))))
+      (let ((columns (if (null? source) () (first source))))
+        (let ((items (%sql-expand (List second stmt) columns)))
+          (let ((grouped (%sql-grouped? stmt items))
+                (order (List map (fn (_ term) (%sql-term-expr (first term) items "ORDER"))
+                                 (List ref 4 stmt))))
+            (let ((scopes (if grouped
+                            (%sql-grouped stmt items order columns
+                                          (%sql-filtered stmt source outer) outer)
+                            (%sql-filtered stmt source outer))))
+              (let ((rows (%sql-page
+                            (%sql-distinct
+                              (List map
+                                (fn (_ s) (List map (fn (_ i) (sql-eval (first i) s)) items))
+                                (%sql-sorted scopes (List ref 4 stmt) order))
+                              (List ref 9 stmt))
+                            (%sql-count (List ref 6 stmt))
+                            (%sql-count (List ref 5 stmt)))))
+                (list (List map (fn (_ i) (%sql-heading i columns)) items)
+                      (if (null? rows) (%sql-item-types items columns grouped outer)
+                        (List map first (first rows)))
+                      rows)))))))))
+
+; A select statement's result: a SELECT's, or that of the SELECT a WITH
+; ends in, its tables made first, each one there for the next.  A name a
+; WITH gives hides a table of that name until the statement is done.
+(def %sql-query-result
+  (fn (_ stmt outer)
+    (if (eq? (first stmt) (lit with))
+      (let ((names (List map (fn (_ t) (%sql-key (first t))) (List second stmt))))
+        (let ((hidden (List map (fn (_ name) (%sql-withs get name)) names)))
+          (List for-each
+            (fn (_ t)
+              (%sql-withs set! (%sql-key (first t)) (%sql-query-result (List second t) outer)))
+            (List second stmt))
+          (let ((result (%sql-query-result (List third stmt) outer)))
+            (List for-each
+              (fn (_ name was)
+                (if (null? was) (%sql-withs del! name) (%sql-withs set! name was)))
+              names hidden)
+            result)))
+      (%sql-select-result stmt outer))))
+
+(sql-select-runner! %sql-query-result)
+
+; A table's columns as a scope's, under its own name
+(def %sql-table-scope-columns
+  (fn (_ table)
+    (List map (fn (_ c) (sql-column (first table) (first c) (List second c)))
+              (List second table))))
+
+; TABLE with ROWS for its rows
+(def %sql-store!
+  (fn (_ table rows)
+    (%sql-tables set! (%sql-key (first table))
+      (list (first table) (List second table) rows))
+    ()))
+
 (def-class SqlStatement ()
   (static
-    (method select (self stmt)
-      (let ((source (if (null? (List third stmt)) () (%sql-from (List third stmt)))))
-        (let ((columns (if (null? source) () (first source))))
-          (let ((items (%sql-expand (List second stmt) columns)))
-            (let ((grouped (%sql-grouped? stmt items))
-                  (order (List map (fn (_ term) (%sql-term-expr (first term) items "ORDER"))
-                                   (List ref 4 stmt))))
-              (let ((scopes (if grouped
-                              (%sql-grouped stmt items order columns
-                                            (%sql-filtered stmt source))
-                              (%sql-filtered stmt source))))
-                (let ((rows (%sql-page
-                              (%sql-distinct
-                                (List map
-                                  (fn (_ s) (List map (fn (_ i) (sql-eval (first i) s)) items))
-                                  (%sql-sorted scopes (List ref 4 stmt) order))
-                                (List ref 9 stmt))
-                              (%sql-count (List ref 6 stmt))
-                              (%sql-count (List ref 5 stmt)))))
-                  (list (List map (fn (_ i) (%sql-heading i columns)) items)
-                        (if (null? rows) (%sql-item-types items columns grouped)
-                          (List map first (first rows)))
-                        rows))))))))
+    (method select (self stmt) (%sql-query-result stmt ()))
+    (method with (self stmt) (%sql-query-result stmt ()))
+    ; Every SET is worked out from the row as it was
+    (method update (self stmt)
+      (let ((table (%sql-table (List second stmt))) (where (List ref 3 stmt)))
+        (let ((columns (%sql-table-scope-columns table))
+              (places (List map
+                        (fn (_ set)
+                          (let ((i (List find-index
+                                     (fn (_ c) (sql-same-name? (first c) (first set)))
+                                     (List second table))))
+                            (when (null? i)
+                              (error (Str8 str "Binder Error: Referenced update column "
+                                               (first set) " not found in table!")))
+                            (pair i (List second set))))
+                        (List third stmt))))
+          (%sql-store! table
+            (List map
+              (fn (_ row)
+                (let ((scope (sql-scope columns row () ())))
+                  (if (or (null? where) (eq? (sql-truth (sql-eval where scope)) #t))
+                    (List map
+                      (fn (_ j old column)
+                        (let ((set (List find (fn (_ p) (= (first p) j)) places)))
+                          (if (null? set) old
+                            (sql-cast (sql-eval (rest set) scope) (List second column)))))
+                      (List range 0 (List length row)) row (List second table))
+                    row)))
+              (List third table))))))
+    (method delete (self stmt)
+      (let ((table (%sql-table (List second stmt))) (where (List third stmt)))
+        (let ((columns (%sql-table-scope-columns table)))
+          (%sql-store! table
+            (if (null? where) ()
+              (List reject
+                (fn (_ row) (eq? (sql-truth (sql-eval where (sql-scope columns row () ()))) #t))
+                (List third table)))))))
+    ; A table made AS a select statement has its columns and its rows
     (method create (self stmt)
-      (let ((name (List second stmt)) (columns (List third stmt)))
-        (%sql-distinct-columns columns)
-        (match
-          ((not (%sql-tables has? (%sql-key name)))
-            (%sql-tables set! (%sql-key name) (list name columns ())))
-          ((List ref 3 stmt)
-            (%sql-tables set! (%sql-key name) (list name columns ())))
-          ((not (List ref 4 stmt))
-            (error (Str8 str "Catalog Error: Table with name \"" name
-                             "\" already exists!"))))
-        ()))
-    (method insert (self stmt)
-      (let ((table (%sql-table (List second stmt))))
-        (let ((places (%sql-places table (List third stmt))))
-          (let ((rows (List map
-                        (fn (_ exprs)
-                          (%sql-insert-row table places (List third stmt) exprs))
-                        (List ref 3 stmt))))
-            (%sql-tables set! (%sql-key (first table))
-              (list (first table) (List second table)
-                    (List append (List third table) rows)))
+      (let ((name (List second stmt)) (as (eq? (first (List third stmt)) (lit select))))
+        (let ((result (if (or as (eq? (first (List third stmt)) (lit with)))
+                        (%sql-query-result (List third stmt) ())
+                        ())))
+          (let ((columns (if (null? result) (List third stmt)
+                           (List map (fn (_ n t) (list n t)) (first result) (List second result))))
+                (rows (if (null? result) ()
+                        (List map (fn (_ row) (List map rest row)) (List third result)))))
+            (%sql-distinct-columns columns)
+            (match
+              ((not (%sql-tables has? (%sql-key name)))
+                (%sql-tables set! (%sql-key name) (list name columns rows)))
+              ((List ref 3 stmt)
+                (%sql-tables set! (%sql-key name) (list name columns rows)))
+              ((not (List ref 4 stmt))
+                (error (Str8 str "Catalog Error: Table with name \"" name
+                                 "\" already exists!"))))
             ()))))
+    (method insert (self stmt)
+      (let ((table (%sql-table (List second stmt))) (given (List ref 3 stmt)))
+        (let ((places (%sql-places table (List third stmt)))
+              (rows-of-values
+                (if (and (not (null? given)) (symbol? (first given)))
+                  (List third (%sql-query-result given ()))
+                  (List map (fn (_ exprs) (List map (fn (_ e) (sql-eval e ())) exprs)) given))))
+          (%sql-store! table
+            (List append (List third table)
+              (List map
+                (fn (_ values) (%sql-insert-row table places (List third stmt) values))
+                rows-of-values))))))
     (method drop (self stmt)
       (let ((name (List second stmt)))
         (if (%sql-tables has? (%sql-key name))
@@ -474,7 +588,11 @@
           (unless (List third stmt) (%sql-table name)))
         ()))))
 
+; A statement run.  What a WITH named in a run that raised is not left for
+; this one.
 (def sql-execute
-  (fn (_ stmt) ((class-static-ref SqlStatement (first stmt)) SqlStatement stmt)))
+  (fn (_ stmt)
+    (List for-each (fn (_ name) (%sql-withs del! name)) (%sql-withs keys))
+    ((class-static-ref SqlStatement (first stmt)) SqlStatement stmt)))
 
 (provide sql/exec sql-execute sql-table-names sql-table-columns)

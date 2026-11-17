@@ -45,9 +45,11 @@ What is built:
   booleans, rounding as DuckDB does: a double's half to the even integer,
   a decimal's away from zero.
 - **Tables.** In memory, for the life of the process: `CREATE [OR
-  REPLACE] TABLE [IF NOT EXISTS]`, `INSERT INTO ... VALUES` with or
-  without a column list, `DROP TABLE [IF EXISTS]`. A value is cast to its
-  column's type as it goes in.
+  REPLACE] TABLE [IF NOT EXISTS]`, with columns or `AS` a select
+  statement; `INSERT INTO ... VALUES` or from a `SELECT`, with or without
+  a column list; `UPDATE ... SET ... [WHERE]`; `DELETE FROM ... [WHERE]`;
+  `DROP TABLE [IF EXISTS]`. A value is cast to its column's type as it
+  goes in.
 - **Queries.** `SELECT [DISTINCT]` with `*` and `t.*`, table aliases,
   `WHERE`, `ORDER BY` with `ASC`, `DESC` and `NULLS FIRST` or `LAST`,
   `LIMIT` and `OFFSET`; and DuckDB's order, `FROM t` alone or
@@ -55,6 +57,9 @@ What is built:
 - **Joins.** `JOIN ... ON`, `LEFT`, `RIGHT` and `FULL [OUTER] JOIN`,
   `CROSS JOIN`, and tables listed with commas; a table joined to itself
   under two aliases.
+- **Subqueries.** A select statement in parentheses for its one value,
+  after `[NOT] IN`, after `[NOT] EXISTS`, and as a table of a `FROM`;
+  `WITH name AS (...)`. A subquery reads the row it is answered for.
 - **Groups.** `count`, `sum`, `avg`, `min` and `max`, with `DISTINCT` inside a
   call; `GROUP BY` an expression, an alias, a place in the list, or
   `ALL`; `HAVING`.
@@ -97,7 +102,8 @@ answered differently.
 
 In this order:
 
-1. Subqueries, `UNION`, `JOIN ... USING`, `UPDATE` and `DELETE`.
+1. `UNION`, `INTERSECT` and `EXCEPT`, `JOIN ... USING`, window
+   functions, and a WITH that reads itself.
 2. The remaining types: REAL, the small integers, dates and times; and
    the functions that go with them.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
@@ -144,7 +150,10 @@ No script runs against Oracle's MySQL.
   ASCII letters only.
 - Groups come in the order their keys first appear; DuckDB promises no
   order.
-- A join compares every pair of rows.
+- A join compares every pair of rows, and a subquery is run again for
+  every row it is asked of, whether or not it reads that row.
+- A subquery's heading is the statement spelled back, as DuckDB's is, but
+  not in every detail of its spelling.
 - A table lasts as long as the process: there is no database file.
 - A division by zero is an error, as in DuckDB 2.0, without its hint
   about `TRY` and `error_on_division_by_zero`.
