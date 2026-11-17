@@ -1,5 +1,7 @@
 # x-sql — SQL on x-lang
 
+<p align="center"><img src="docs/bitwise-banner.svg" alt="x-sql, with Bitwise the owl" width="100%"></p>
+
 A database language on [x-lang](https://github.com/jonruttan/x-lang),
 loaded as a lang, following [DuckDB](https://duckdb.org/)'s dialect and
 its way of showing a result.
@@ -70,3 +72,5 @@ it differs and why.
 ## Install
 
     make install    # into <share>/langs/sql, where `x -l sql` looks
+
+<p align="center"><img src="docs/bitwise-mark.svg" alt="Bitwise" width="96"></p>
