@@ -57,6 +57,24 @@
             "Aggregates: count(*) count(x) sum(x) avg(x) min(x) max(x),"
             "and DISTINCT inside a call: count(DISTINCT x).")
       (list "SELECT b, count(*), avg(a) FROM t GROUP BY ALL HAVING count(*) > 1;"))
+    (list "window" "A value for a row from the rows around it."
+      (list "function(...) OVER ([PARTITION BY expression, ...]"
+            "                    [ORDER BY expression [DESC] [NULLS FIRST | LAST], ...]"
+            "                    [ROWS frame])"
+            "row_number()  rank()  dense_rank()    a row's place in its partition"
+            "lag(x [, rows [, otherwise]])         x from a row before"
+            "lead(x [, rows [, otherwise]])        x from a row after"
+            "first_value(x)  last_value(x)         x at an end of the frame"
+            "count sum avg min max                 over the frame"
+            "A frame is ROWS BETWEEN end AND end, or ROWS end, up to the row:"
+            "UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING,"
+            "UNBOUNDED FOLLOWING.  With no frame an ordered window runs from its"
+            "partition's start to the row and the rows that tie with it, and one"
+            "with no order is the whole partition."
+            "QUALIFY condition    keeps the rows a window says, after HAVING"
+            "Windows are answered after WHERE, GROUP BY and HAVING.")
+      (list "SELECT a, sum(a) OVER (ORDER BY a) FROM t;"
+            "SELECT * FROM t QUALIFY row_number() OVER (PARTITION BY b ORDER BY a) = 1;"))
     (list "order" "The order of a result, and how much of it."
       (list "ORDER BY expression | alias | place in the list [ASC | DESC]"
             "  [NULLS FIRST | NULLS LAST], ..."

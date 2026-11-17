@@ -13,12 +13,18 @@
 ; A statement answers a result, (NAMES TYPES ROWS) with each row a list of
 ; sql/eval's values, or nil when it has nothing to show.  SqlStatement
 ; holds one static method a statement, named by the parser's head.
+;
+; A call OVER a window is answered for every row before any row's items
+; are: SqlWindow holds one static method a window function, an aggregate
+; is answered over each row's frame, and the value is left in the row's
+; scope under the call's node.
 
 (module sql/exec)
 (import x/type/list)
 (import x/type/str)
 (import x/type/class)
 (import x/type/dict)
+(import x/num/tower)
 (import sql/words sql-lower sql-same-name?)
 (import sql/files sql-file-read sql-file-write sql-file-stem)
 (import sql/eval
@@ -26,6 +32,7 @@
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
   sql-common-type
   sql-aggregated? sql-aggregate-call? sql-cast
+  sql-windowed? sql-scope-windowed sql-window-aggregate sql-type-name
   sql-truth sql-order sql-null? sql-value-text)
 
 ; --- the tables --------------------------------------------------------------
@@ -321,7 +328,8 @@
     (or (not (null? (List ref 7 stmt)))
         (not (null? (List ref 8 stmt)))
         (List any? (fn (_ i) (sql-aggregated? (first i))) items)
-        (List any? (fn (_ term) (sql-aggregated? (first term))) (List ref 4 stmt)))))
+        (List any? (fn (_ term) (sql-aggregated? (first term))) (List ref 4 stmt))
+        (sql-aggregated? (List ref 10 stmt)))))
 
 ; What the rows are grouped by: GROUP BY's terms, or under ALL every item
 ; that holds no aggregate
@@ -336,6 +344,8 @@
         (List map
           (fn (_ e)
             (let ((key (%sql-term-expr e items "GROUP BY")))
+              (when (sql-windowed? key)
+                (error "Binder Error: GROUP BY clause cannot contain window functions!"))
               (when (sql-aggregated? key)
                 (error "Binder Error: GROUP BY clause cannot contain aggregates!"))
               key))
@@ -355,6 +365,9 @@
     (match
       ((List any? (fn (_ k) (%sql-same? e k columns)) keys) ())
       ((sql-aggregate-call? e) ())
+      ((eq? (first e) (lit over))
+        (do (%sql-check-parts (List third (List second e)) keys columns)
+            (%sql-check-parts (list (List third e) (List ref 3 e)) keys columns)))
       ((or (eq? (first e) (lit subquery)) (eq? (first e) (lit exists))) ())
       ((eq? (first e) (lit in-query)) (self (List second e) keys columns))
       ((eq? (first e) (lit col))
@@ -391,6 +404,234 @@
         (%sql-partition scopes
           (fn (_ s)
             (%sql-values-key (List map (fn (_ k) (sql-eval k s)) keys))))))))
+
+; --- windows -----------------------------------------------------------------
+
+; The over nodes in NODE that are not among FOUND, before FOUND: each node
+; once, as the parser made it.  A subquery's windows are its own.
+(def %sql-overs-in
+  (fn (self node found)
+    (match
+      ((not (pair? node)) found)
+      ((eq? (first node) (lit over))
+        (do (when (or (sql-windowed? (List third (List second node)))
+                      (sql-windowed? (rest (rest node))))
+              (error "Parser Error: window functions are not allowed in window definitions"))
+            (if (List any? (fn (_ f) (same? f node)) found) found (pair node found))))
+      ((or (eq? (first node) (lit subquery)) (eq? (first node) (lit exists))) found)
+      ((eq? (first node) (lit in-query)) (self (List second node) found))
+      (#t (List fold (fn (_ seen inner) (self inner seen)) found node)))))
+
+; The runs of ENTRIES that TERMS do not tell apart, an entry
+; (INDEX ORDER-VALUES SCOPE): the rows that are peers
+(def %sql-window-runs
+  (fn (_ entries terms)
+    (List reverse
+      (List map (fn (_ run) (List reverse run))
+        (List fold
+          (fn (_ runs e)
+            (if (and (not (null? runs))
+                     (= (%sql-keys-order (List second (first (first runs))) (List second e) terms) 0))
+              (pair (pair e (first runs)) (rest runs))
+              (pair (list e) runs)))
+          () entries)))))
+
+; A row's place in its partition, a row of RUNS each: (INDEX RANK DENSE
+; END), INDEX from 0, RANK one more than the index of its first peer, DENSE
+; its run counted from 1, and END the index of its last peer
+(def %sql-window-places
+  (fn (self runs start dense)
+    (if (null? runs) ()
+      (let ((end (+ start (List length (first runs)))))
+        (List append
+          (List map (fn (_ i) (list i (+ start 1) dense (- end 1))) (List range start end))
+          (self (rest runs) end (+ dense 1)))))))
+
+; A partition is (SCOPES PLACES FRAME COLUMNS OUTER): its rows' scopes in
+; the window's order, each row's place, and the window's frame.
+
+; The index a frame starts at for the row at I
+(def %sql-frame-low
+  (fn (_ frame i)
+    (if (or (null? frame) (eq? (first frame) (lit unbounded))) 0
+      (Num max 0 (+ i (first frame))))))
+
+; The index a frame ends at for the row of PLACE among N: with no frame
+; written, the row's last peer
+(def %sql-frame-high
+  (fn (_ frame place n)
+    (match
+      ((null? frame) (List ref 3 place))
+      ((eq? (List second frame) (lit unbounded)) (- n 1))
+      (#t (Num min (- n 1) (+ (first place) (List second frame)))))))
+
+; The scopes in each row's frame, a list a row
+(def %sql-window-frames
+  (fn (_ part)
+    (let ((scopes (first part)) (frame (List third part))
+          (n (List length (first part))))
+      (List map
+        (fn (_ place)
+          (let ((low (%sql-frame-low frame (first place)))
+                (high (%sql-frame-high frame place n)))
+            (if (> low high) ()
+              (List take (+ (- high low) 1) (List drop low scopes)))))
+        (List second part)))))
+
+; CALL has from LEAST to MOST arguments, or the error DuckDB gives, which
+; names their types
+(def %sql-window-arity
+  (fn (_ call part least most)
+    (let ((args (List third call)))
+      (unless (and (>= (List length args) least) (<= (List length args) most)
+                   (not (List any? (fn (_ a) (eq? (first a) (lit star))) args)))
+        (%sql-window-no-match call part)))))
+
+(def %sql-window-no-match
+  (fn (_ call part)
+    (error
+      (Str8 str "Binder Error: No function matches the given name and argument types '"
+                (sql-lower (List second call)) "("
+                (Str8 join ", "
+                  (List map
+                    (fn (_ a)
+                      (if (eq? (first a) (lit star)) "*"
+                        (sql-type-name (first (sql-eval a (first (first part)))))))
+                    (List third call)))
+                ")'. You might need to add explicit type casts."))))
+
+(def %sql-whole-types (list (lit integer) (lit bigint) (lit hugeint)))
+
+; How many rows lag and lead reach: their second argument, or 1
+(def %sql-window-offset
+  (fn (_ call part)
+    (let ((args (List third call)))
+      (if (null? (rest args)) 1
+        (let ((v (sql-eval (List second args) (first (first part)))))
+          (unless (List includes? (first v) %sql-whole-types)
+            (%sql-window-no-match call part))
+          (if (sql-null? v) 0 (rest v)))))))
+
+; VALUES moved BY places toward the front, nil where no row comes
+(def %sql-window-moved
+  (fn (_ values by n)
+    (if (< by 0)
+      (List append (List repeat (Num min (- 0 by) n) ())
+                   (List take (Num max 0 (+ n by)) values))
+      (List append (List drop (Num min by n) values)
+                   (List repeat (Num min by n) ())))))
+
+; lag and lead: the argument's value WAY rows on, each offset's worth, and
+; where no row is there the third argument as the first's type, or NULL
+(def %sql-window-shifted
+  (fn (_ call part way)
+    (%sql-window-arity call part 1 3)
+    (let ((args (List third call)) (scopes (first part)))
+      (let ((values (List map (fn (_ s) (sql-eval (first args) s)) scopes)))
+        (List map
+          (fn (_ moved own scope)
+            (match
+              ((not (null? moved)) moved)
+              ((< (List length args) 3) (pair (first own) ()))
+              (#t (pair (first own)
+                        (sql-cast (sql-eval (List third args) scope) (first own))))))
+          (%sql-window-moved values (* way (%sql-window-offset call part))
+                             (List length scopes))
+          values scopes)))))
+
+; first_value and last_value: the argument for the row PICK takes from each
+; frame, NULL for a frame with no row
+(def %sql-window-framed
+  (fn (_ call part pick)
+    (%sql-window-arity call part 1 1)
+    (let ((arg (first (List third call))))
+      (List map
+        (fn (_ members scope)
+          (if (null? members) (pair (first (sql-eval arg scope)) ())
+            (sql-eval arg (pick members))))
+        (%sql-window-frames part) (first part)))))
+
+; An aggregate over each row's frame
+(def %sql-window-aggregated
+  (fn (_ call part)
+    (let ((columns (List ref 3 part)) (outer (List ref 4 part)))
+      (List map
+        (fn (_ members scope)
+          (sql-window-aggregate call
+            (if (null? members)
+              (sql-scope columns (List second scope) (list ()) outer)
+              (%sql-group-scope columns members outer))))
+        (%sql-window-frames part) (first part)))))
+
+(def %sql-window-counted
+  (fn (_ call part place-of)
+    (%sql-window-arity call part 0 0)
+    (List map (fn (_ place) (pair (lit bigint) (place-of place))) (List second part))))
+
+; One static method a window function: CALL's values for the rows of PART,
+; in their order
+(def-class SqlWindow ()
+  (static
+    (method row_number (self call part)
+      (%sql-window-counted call part (fn (_ place) (+ (first place) 1))))
+    (method rank (self call part) (%sql-window-counted call part (fn (_ place) (List second place))))
+    (method dense_rank (self call part) (%sql-window-counted call part (fn (_ place) (List third place))))
+    (method lag (self call part) (%sql-window-shifted call part -1))
+    (method lead (self call part) (%sql-window-shifted call part 1))
+    (method first_value (self call part) (%sql-window-framed call part first))
+    (method last_value (self call part) (%sql-window-framed call part (fn (_ members) (List last members))))))
+
+; One partition's values, each with its row's index: (INDEX . VALUE)
+(def %sql-window-part
+  (fn (_ node entries columns outer)
+    (let ((call (List second node)) (terms (List ref 3 node)))
+      (let ((sorted (if (null? terms) entries
+                      (List sort
+                        (fn (_ a b) (< (%sql-keys-order (List second a) (List second b) terms) 0))
+                        entries))))
+        (let ((part (list (List map (fn (_ e) (List third e)) sorted)
+                          (%sql-window-places (%sql-window-runs sorted terms) 0 1)
+                          (List ref 4 node) columns outer))
+              (window (class-static-ref SqlWindow
+                        (Str8 ->sym (sql-lower (List second call))))))
+          (List map pair
+            (List map first sorted)
+            (if (null? window) (%sql-window-aggregated call part)
+              (window SqlWindow call part))))))))
+
+; What the window of NODE answers for each of SCOPES, in their order
+(def %sql-window-values
+  (fn (_ node scopes columns outer)
+    (let ((entries (List map
+                     (fn (_ s i)
+                       (list i (List map (fn (_ term) (sql-eval (first term) s)) (List ref 3 node)) s))
+                     scopes (List range 0 (List length scopes)))))
+      (List map rest
+        (List sort (fn (_ a b) (< (first a) (first b)))
+          (List flat-map
+            (fn (_ rows) (%sql-window-part node rows columns outer))
+            (%sql-partition entries
+              (fn (_ e)
+                (%sql-values-key
+                  (List map (fn (_ p) (sql-eval p (List third e))) (List third node)))))))))))
+
+; SCOPES with each of OVERS answered in them.  A row that is of no table
+; has a scope here all the same, to hold the answers.
+(def %sql-windowed
+  (fn (_ scopes overs columns outer)
+    (if (null? overs) scopes
+      (List fold
+        (fn (_ held node)
+          (List map (fn (_ s v) (sql-scope-windowed s (pair node v)))
+                    held (%sql-window-values node held columns outer)))
+        (List map (fn (_ s) (if (null? s) (sql-scope () () () outer) s)) scopes)
+        overs))))
+
+; SCOPES that QUALIFY keeps
+(def %sql-qualified
+  (fn (_ scopes qualify)
+    (if (null? qualify) scopes
+      (List filter (fn (_ s) (eq? (sql-truth (sql-eval qualify s)) #t)) scopes))))
 
 ; --- LIMIT and OFFSET --------------------------------------------------------
 
@@ -469,6 +710,8 @@
     (let ((where (List ref 3 stmt)))
       (when (sql-aggregated? where)
         (error "Binder Error: WHERE clause cannot contain aggregates!"))
+      (when (sql-windowed? where)
+        (error "Binder Error: WHERE clause cannot contain window functions!"))
       (let ((scopes (match
                       ((not (null? source))
                         (List map (fn (_ row) (sql-scope (first source) row () outer))
@@ -488,6 +731,8 @@
           (having (List ref 8 stmt)))
       (List for-each (fn (_ i) (%sql-check-grouped (first i) keys columns)) items)
       (List for-each (fn (_ e) (%sql-check-grouped e keys columns)) order)
+      (when (sql-windowed? having)
+        (error "Binder Error: HAVING clause cannot contain window functions!"))
       (unless (null? having) (%sql-check-grouped having keys columns))
       (let ((groups (%sql-groups scopes keys columns outer)))
         (if (null? having) groups
@@ -495,13 +740,17 @@
                        groups))))))
 
 ; The types of ITEMS' columns when no row shows them: each item's type over
-; a row of NULLs, a group with no rows when GROUPED
+; a row of NULLs, a group with no rows when GROUPED, and that row the one
+; row of each of the windows OVERS
 (def %sql-item-types
-  (fn (_ items columns grouped outer)
-    (let ((scope (match
-                   (grouped (%sql-group-scope columns () outer))
-                   ((and (null? columns) (null? outer)) ())
-                   (#t (sql-scope columns (%sql-nulls columns) () outer)))))
+  (fn (_ items columns grouped outer overs)
+    (let ((scope (first
+                   (%sql-windowed
+                     (list (match
+                             (grouped (%sql-group-scope columns () outer))
+                             ((and (null? columns) (null? outer)) ())
+                             (#t (sql-scope columns (%sql-nulls columns) () outer))))
+                     overs columns outer))))
       (List map (fn (_ i) (first (sql-eval (first i) scope))) items))))
 
 ; ROWS with each row once, when DISTINCT
@@ -519,10 +768,18 @@
           (let ((grouped (%sql-grouped? stmt items))
                 (order (List map (fn (_ term) (%sql-term-expr (first term) items "ORDER"))
                                  (List ref 4 stmt))))
-            (let ((scopes (if grouped
-                            (%sql-grouped stmt items order columns
-                                          (%sql-filtered stmt source outer) outer)
-                            (%sql-filtered stmt source outer))))
+            (let ((qualify (List ref 10 stmt))
+                  (overs (List reverse
+                           (%sql-overs-in (list items order (List ref 10 stmt)) ()))))
+            (let ((scopes (%sql-qualified
+                            (%sql-windowed
+                              (if grouped
+                                (%sql-grouped stmt items
+                                  (if (null? qualify) order (pair qualify order))
+                                  columns (%sql-filtered stmt source outer) outer)
+                                (%sql-filtered stmt source outer))
+                              overs columns outer)
+                            qualify)))
               (let ((rows (%sql-page
                             (%sql-distinct
                               (List map
@@ -532,9 +789,9 @@
                             (%sql-count (List ref 6 stmt))
                             (%sql-count (List ref 5 stmt)))))
                 (list (List map (fn (_ i) (%sql-heading i columns)) items)
-                      (if (null? rows) (%sql-item-types items columns grouped outer)
+                      (if (null? rows) (%sql-item-types items columns grouped outer overs)
                         (List map first (first rows)))
-                      rows)))))))))
+                      rows))))))))))
 
 ; A select statement's result: a SELECT's, or that of the SELECT a WITH
 ; ends in, its tables made first, each one there for the next.  A name a
@@ -648,6 +905,8 @@
     (method set (self stmt) (%sql-query-result stmt ()))
     ; Every SET is worked out from the row as it was
     (method update (self stmt)
+      (when (sql-windowed? (rest (rest stmt)))
+        (error "Binder Error: window functions are not allowed in UPDATE"))
       (let ((table (%sql-table (List second stmt))) (where (List ref 3 stmt)))
         (let ((columns (%sql-table-scope-columns table))
               (places (List map
@@ -680,7 +939,7 @@
           (if (pair? source) (%sql-query-result source ())
             (%sql-query-result
               (list (lit select) (list (list (list (lit star) ()) ())) (list (list source ()))
-                    () () () () () () #f)
+                    () () () () () () #f ())
               ()))
           (List third stmt) (List ref 3 stmt) (List ref 4 stmt))))
     ; A file's rows added to a table, each value cast to its column

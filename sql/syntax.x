@@ -31,7 +31,7 @@
 (import x/reader/lexer)
 (import x/tool/syntax)
 (import sql/words
-  sql-lower sql-upper sql-reserved sql-words sql-constants sql-type-words sql-aggregates sql-ops)
+  sql-lower sql-upper sql-reserved sql-words sql-constants sql-type-words sql-aggregates sql-window-functions sql-ops)
 
 (def %sql-syntax-blanks (list 32 9 13 10 12))
 (def %sql-syntax-name-start (list (pair 97 122) (pair 65 90) 95))
@@ -59,6 +59,7 @@
         ((List any? (fn (_ row) (str=? (first row) upper)) sql-type-words)
           (lit class))
         ((List includes? (sql-lower text) sql-aggregates) (lit name))
+        ((List includes? (sql-lower text) sql-window-functions) (lit name))
         (#t ())))))
 
 (def %sql-syntax-punct (list "(" ")" "," ";" "." "[" "]" "{" "}"))
