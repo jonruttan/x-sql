@@ -6,8 +6,8 @@
 ; @copyright 2026 Jon Ruttan
 ; @license MIT No Attribution (MIT-0)
 ;
-; DuckDB's box: a heading of names and types, centred, then the rows, an
-; integer to the right of its column and anything else to the left.  A
+; DuckDB's box: a heading of names and types, centred, then the rows, a
+; number to the right of its column and anything else to the left.  A
 ; column is as wide as the widest thing in it, counted in terminal cells.
 ; A result with no rows is the heading, closed, and "0 rows" under it.
 
@@ -15,7 +15,7 @@
 (import x/type/list)
 (import x/type/str)
 (import x/tui/width)
-(import sql/eval sql-value-text sql-type-heading sql-integer-type?)
+(import sql/eval sql-value-text sql-type-heading sql-numeric-type?)
 
 (def %sql-spaces (fn (_ n) (Str8 repeat n " ")))
 
@@ -91,7 +91,7 @@
                   (%sql-line
                     (List map
                       (fn (_ j)
-                        ((if (sql-integer-type? (List ref j types)) %sql-right %sql-left)
+                        ((if (sql-numeric-type? (List ref j types)) %sql-right %sql-left)
                          (List ref j widths) (List ref j row)))
                       js)))
                 texts))

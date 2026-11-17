@@ -459,15 +459,3 @@ Binder Error: No function matches the given name and argument types 'sum(VARCHAR
 ```output
 Catalog Error: Scalar Function with name foo does not exist!
 ```
-
-### avg is not built
-
-DuckDB answers a DOUBLE.
-
-```x
-(sql "CREATE OR REPLACE TABLE t (a INTEGER, b VARCHAR); INSERT INTO t VALUES (1,'x'),(2,'x'),(3,'y'),(NULL,'y'),(NULL,NULL); SELECT avg(a) FROM t")
-```
----
-```output
-Catalog Error: Scalar Function with name avg does not exist!
-```

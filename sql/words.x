@@ -37,21 +37,26 @@
         (list "<" (lit lt) "<") (list "<=" (lit le) "<=")
         (list ">" (lit gt) ">") (list ">=" (lit ge) ">=")))
 
-; A column type as written, upper case, and the type it names
+; A type as written, upper case, the type it names, and how a heading
+; spells it: nil for as it was written, which is how DuckDB heads a name
+; its grammar does not know as a keyword.  DECIMAL and NUMERIC name a type
+; only with their width and scale, which the parser reads.
 (def sql-type-words
-  (list (list "INTEGER" (lit integer)) (list "INT" (lit integer))
-        (list "INT4" (lit integer)) (list "SIGNED" (lit integer))
-        (list "BIGINT" (lit bigint)) (list "INT8" (lit bigint))
-        (list "LONG" (lit bigint))
-        (list "HUGEINT" (lit hugeint))
-        (list "VARCHAR" (lit varchar)) (list "TEXT" (lit varchar))
-        (list "STRING" (lit varchar)) (list "CHAR" (lit varchar))
-        (list "BPCHAR" (lit varchar))
-        (list "BOOLEAN" (lit boolean)) (list "BOOL" (lit boolean))
-        (list "LOGICAL" (lit boolean))))
+  (list (list "INTEGER" (lit integer) "INTEGER") (list "INT" (lit integer) "INTEGER")
+        (list "INT4" (lit integer) ()) (list "SIGNED" (lit integer) ())
+        (list "BIGINT" (lit bigint) "BIGINT") (list "INT8" (lit bigint) ())
+        (list "LONG" (lit bigint) ())
+        (list "HUGEINT" (lit hugeint) ())
+        (list "VARCHAR" (lit varchar) "VARCHAR") (list "CHAR" (lit varchar) "VARCHAR")
+        (list "TEXT" (lit varchar) ()) (list "STRING" (lit varchar) ())
+        (list "BPCHAR" (lit varchar) ())
+        (list "BOOLEAN" (lit boolean) "BOOLEAN") (list "BOOL" (lit boolean) ())
+        (list "LOGICAL" (lit boolean) ())
+        (list "DOUBLE" (lit double) ()) (list "FLOAT8" (lit double) ())
+        (list "DECIMAL" (lit decimal) "DECIMAL") (list "NUMERIC" (lit decimal) "DECIMAL")))
 
 ; The functions that answer one value for a group of rows
-(def sql-aggregates (list "count" "sum" "min" "max"))
+(def sql-aggregates (list "count" "sum" "min" "max" "avg"))
 
 (provide sql/words
   sql-reserved sql-ops sql-binary-ops sql-type-words sql-aggregates)
