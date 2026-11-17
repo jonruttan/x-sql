@@ -19,7 +19,7 @@
   (list
     (list "select" "Rows computed from tables, or from nothing."
       (list "SELECT [DISTINCT] item [[AS] alias], ..."
-            "  [FROM table [[AS] alias] [join ...]]"
+            "  [FROM table | (SELECT ...) [[AS] alias] [join ...]]"
             "  [WHERE condition] [GROUP BY key, ... | ALL] [HAVING condition]"
             "  [ORDER BY term [ASC | DESC] [NULLS FIRST | LAST], ...]"
             "  [LIMIT count] [OFFSET count]"
@@ -60,6 +60,25 @@
             "A column not named is NULL.")
       (list "INSERT INTO t VALUES (1, 'one', 9.99), (2, 'two', NULL);"
             "INSERT INTO t (b) VALUES ('three');"))
+    (list "update" "Rows of a table changed, or removed."
+      (list "UPDATE table SET column = value, ... [WHERE condition]"
+            "DELETE FROM table [WHERE condition]"
+            "With no WHERE it is every row.  Every SET is worked out from the"
+            "row as it was, and its value cast to its column's type.")
+      (list "UPDATE t SET price = price * 2 WHERE a > 1;"
+            "DELETE FROM t WHERE b IS NULL;"))
+    (list "subquery" "A select statement inside another."
+      (list "(SELECT ...)                   its one value; NULL when no row"
+            "value [NOT] IN (SELECT ...)"
+            "[NOT] EXISTS (SELECT ...)"
+            "FROM (SELECT ...) [[AS] alias]  a table"
+            "WITH name AS (SELECT ...), ... SELECT ...   tables by name"
+            "INSERT INTO table [(column, ...)] SELECT ..."
+            "CREATE [OR REPLACE] TABLE name AS SELECT ..."
+            "A subquery reads the row it is answered for: a name none of its"
+            "own tables has is the outer statement's.")
+      (list "SELECT a, (SELECT count(*) FROM u WHERE u.a > t.a) FROM t;"
+            "WITH big AS (SELECT * FROM t WHERE a > 1) SELECT count(*) FROM big;"))
     (list "drop" "A table gone."
       (list "DROP TABLE [IF EXISTS] name")
       (list "DROP TABLE IF EXISTS t;"))

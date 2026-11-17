@@ -47,11 +47,11 @@ Parser Error: unterminated string literal
 ### a statement that is not built
 
 ```x
-(sql "UPDATE t SET a = 1")
+(sql "ALTER TABLE t ADD COLUMN x INTEGER")
 ```
 ---
 ```output
-Parser Error: syntax error at or near "UPDATE"
+Parser Error: syntax error at or near "ALTER"
 ```
 
 ### an expression that stops short
@@ -100,16 +100,6 @@ Binder Error: Referenced column "a" was not found because the FROM clause is mis
 ---
 ```output
 Not implemented Error: UNION
-```
-
-### WITH
-
-```x
-(sql "WITH x AS (SELECT 1) SELECT 2")
-```
----
-```output
-Parser Error: syntax error at or near "WITH"
 ```
 
 ### a comparison across types

@@ -24,10 +24,18 @@
 ;       LIMIT, OFFSET   nil or an expression
 ;       GROUP   nil, the name all, or a list of expressions
 ;       DISTINCT   whether rows that repeat are dropped
-;   (create TABLE COLUMNS REPLACE IF-NOT-EXISTS)   COLUMNS a list of (NAME TYPE)
+;   (create TABLE COLUMNS REPLACE IF-NOT-EXISTS)   COLUMNS a list of
+;       (NAME TYPE), or a select statement, whose result the table is
 ;   (insert TABLE NAMES ROWS)   NAMES nil or the columns named; ROWS a list
-;                               of lists of expressions
+;                               of lists of expressions, or a select
+;                               statement
+;   (update TABLE SETS WHERE)   SETS a list of (COLUMN EXPR)
+;   (delete TABLE WHERE)
+;   (with TABLES SELECT)        TABLES a list of (NAME SELECT): each a table
+;                               for the ones after it and for SELECT
 ;   (drop TABLE IF-EXISTS)
+;
+; A table of a FROM is a name, or a select statement in parentheses.
 ;
 ; An expression, its head the name sql/eval's classes know it by:
 ;   (int N)  (str TEXT)  (bool B)  (null)
@@ -43,6 +51,10 @@
 ;   (in E LIST)  (between E LOW HIGH)
 ;   (like E PATTERN NEGATED ANY-CASE)
 ;   NOT IN and NOT BETWEEN are a (not ...) around these
+;   (subquery SELECT)               a select statement in parentheses, for
+;                                   its one value
+;   (in-query E SELECT)             E IN (select statement)
+;   (exists SELECT)
 ;   (call NAME ARGS DISTINCT)   ARGS expressions, or one (star ()) in count(*)
 ;   (neg E)  (not E)  (is-null E NEGATED)
 ;   (and A B)  (or A B)
@@ -244,6 +256,13 @@
             ((%sql-kw? ts "NULL") (pair (list (lit null)) (rest ts)))
             ((%sql-kw? ts "TRUE") (pair (list (lit bool) #t) (rest ts)))
             ((%sql-kw? ts "FALSE") (pair (list (lit bool) #f) (rest ts)))
+            ((and (%sql-op? ts "(") (%sql-query? (rest ts)))
+              (let ((q (%sql-closed-query (rest ts))))
+                (pair (list (lit subquery) (first q)) (rest q))))
+            ((and (%sql-word? ts "EXISTS") (%sql-op? (rest ts) "(")
+                  (%sql-query? (rest (rest ts))))
+              (let ((q (%sql-closed-query (rest (rest ts)))))
+                (pair (list (lit exists) (first q)) (rest q))))
             ((%sql-op? ts "(")
               (let ((e (%sql-expr (rest ts))))
                 (if (%sql-op? (rest e) ")")
@@ -345,6 +364,10 @@
       (let ((at (if negated (rest ts) ts)))
         (let ((wrap (fn (_ node) (if negated (list (lit not) node) node))))
           (match
+            ((and (%sql-kw? at "IN") (%sql-op? (rest at) "(")
+                  (%sql-query? (rest (rest at))))
+              (let ((q (%sql-closed-query (rest (rest at)))))
+                (pair (wrap (list (lit in-query) left (first q))) (rest q))))
             ((%sql-kw? at "IN")
               (let ((l (%sql-parenthesized %sql-expr (rest at))))
                 (pair (wrap (list (lit in) left (first l))) (rest l))))
@@ -431,7 +454,7 @@
 
 ; The clauses a SELECT takes that are not read yet
 (def %sql-unread
-  (list "UNION" "EXCEPT" "INTERSECT" "USING" "NATURAL" "WITH"))
+  (list "UNION" "EXCEPT" "INTERSECT" "USING" "NATURAL"))
 
 (def %sql-refuse-unread
   (fn (_ ts)
@@ -445,16 +468,40 @@
   (fn (_ ts)
     (if (%sql-name? ts) (List second (first ts)) (%sql-near ts))))
 
+; TS starts a select statement
+(def %sql-query?
+  (fn (_ ts) (or (%sql-kw? ts "SELECT") (%sql-kw? ts "FROM") (%sql-kw? ts "WITH"))))
+
+; A select statement and the parenthesis that closes it, TS after the one
+; that opened it
+(def %sql-closed-query
+  (fn (_ ts)
+    (let ((q (%sql-query ts)))
+      (if (%sql-op? (rest q) ")") (pair (first q) (rest (rest q)))
+        (%sql-near (rest q))))))
+
+; What a FROM names: a table, or a select statement in parentheses, as
+; (TABLE . tokens-left)
+(def %sql-table
+  (fn (_ ts)
+    (if (and (%sql-op? ts "(") (%sql-query? (rest ts)))
+      (%sql-closed-query (rest ts))
+      (pair (%sql-name ts) (rest ts)))))
+
 ; A table and its alias, after AS or bare
 (def %sql-source
   (fn (_ ts)
-    (let ((table (%sql-name ts)) (after (rest ts)))
-      (match
-        ((%sql-kw? after "AS")
-          (pair (list table (%sql-name (rest after))) (rest (rest after))))
-        ((%sql-name? after)
-          (pair (list table (List second (first after))) (rest after)))
-        (#t (pair (list table ()) after))))))
+    (let ((named (%sql-table ts)))
+      (%sql-aliased-source (first named) (rest named)))))
+
+(def %sql-aliased-source
+  (fn (_ table after)
+    (match
+      ((%sql-kw? after "AS")
+        (pair (list table (%sql-name (rest after))) (rest (rest after))))
+      ((%sql-name? after)
+        (pair (list table (List second (first after))) (rest after)))
+      (#t (pair (list table ()) after)))))
 
 ; The kind of join TS starts with and the tokens after its JOIN, or nil:
 ; JOIN alone is an inner one, and OUTER after LEFT, RIGHT or FULL says
@@ -624,7 +671,9 @@
         (if (%sql-kw? after "TABLE")
           (let ((guarded (%sql-after (rest after) (list "IF" "NOT" "EXISTS"))))
             (let ((at (if (null? guarded) (rest after) (first guarded))))
-              (let ((columns (%sql-parenthesized %sql-column (rest at))))
+              (let ((columns (if (and (%sql-kw? (rest at) "AS") (%sql-query? (rest (rest at))))
+                               (%sql-query (rest (rest at)))
+                               (%sql-parenthesized %sql-column (rest at)))))
                 (pair (list (lit create) (%sql-name at) (first columns)
                             (not (null? replace)) (not (null? guarded)))
                       (rest columns)))))
@@ -647,8 +696,9 @@
                           (rest (rest names)))))
               (pair (list (lit insert) table (first names) (first rows))
                     (rest rows)))
-            (if (%sql-kw? (rest names) "SELECT")
-              (error "Not implemented Error: INSERT from a SELECT")
+            (if (%sql-query? (rest names))
+              (let ((q (%sql-query (rest names))))
+                (pair (list (lit insert) table (first names) (first q)) (rest q)))
               (%sql-near (rest names))))))
       (%sql-near ts))))
 
@@ -662,13 +712,66 @@
                 (rest at))))
       (%sql-near ts))))
 
-(def %sql-statement
+; A select statement in either order, or a WITH before one
+(def %sql-query
   (fn (_ ts)
     (match
       ((%sql-kw? ts "SELECT") (%sql-select (rest ts)))
       ((%sql-kw? ts "FROM") (%sql-from-first (rest ts)))
+      ((%sql-kw? ts "WITH") (%sql-with (rest ts)))
+      (#t (%sql-near ts)))))
+
+; One table of a WITH: name AS (select statement)
+(def %sql-with-table
+  (fn (_ ts)
+    (let ((name (%sql-name ts)))
+      (if (and (%sql-kw? (rest ts) "AS") (%sql-op? (rest (rest ts)) "("))
+        (let ((q (%sql-closed-query (rest (rest (rest ts))))))
+          (pair (list name (first q)) (rest q)))
+        (%sql-near (rest ts))))))
+
+(def %sql-with
+  (fn (_ ts)
+    (let ((tables (%sql-list %sql-with-table ts)))
+      (let ((q (%sql-query (rest tables))))
+        (pair (list (lit with) (first tables) (first q)) (rest q))))))
+
+; One SET of an UPDATE: column = expression
+(def %sql-set
+  (fn (_ ts)
+    (let ((name (%sql-name ts)))
+      (if (%sql-op? (rest ts) "=")
+        (let ((e (%sql-expr (rest (rest ts)))))
+          (pair (list name (first e)) (rest e)))
+        (%sql-near (rest ts))))))
+
+; UPDATE table SET column = expression, ... [WHERE condition]
+(def %sql-update
+  (fn (_ ts)
+    (let ((table (%sql-name ts)))
+      (if (%sql-word? (rest ts) "SET")
+        (let ((sets (%sql-list %sql-set (rest (rest ts)))))
+          (let ((where (%sql-clause (list "WHERE") %sql-expr (rest sets))))
+            (pair (list (lit update) table (first sets) (first where)) (rest where))))
+        (%sql-near (rest ts))))))
+
+; DELETE FROM table [WHERE condition]
+(def %sql-delete
+  (fn (_ ts)
+    (if (%sql-kw? ts "FROM")
+      (let ((table (%sql-name (rest ts))))
+        (let ((where (%sql-clause (list "WHERE") %sql-expr (rest (rest ts)))))
+          (pair (list (lit delete) table (first where)) (rest where))))
+      (%sql-near ts))))
+
+(def %sql-statement
+  (fn (_ ts)
+    (match
+      ((%sql-query? ts) (%sql-query ts))
       ((%sql-kw? ts "CREATE") (%sql-create (rest ts)))
       ((%sql-word? ts "INSERT") (%sql-insert (rest ts)))
+      ((%sql-word? ts "UPDATE") (%sql-update (rest ts)))
+      ((%sql-word? ts "DELETE") (%sql-delete (rest ts)))
       ((%sql-word? ts "DROP") (%sql-drop (rest ts)))
       (#t (%sql-near ts)))))
 
