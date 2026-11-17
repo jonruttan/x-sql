@@ -84,7 +84,10 @@
         (list "BOOLEAN" (lit boolean) "BOOLEAN") (list "BOOL" (lit boolean) ())
         (list "LOGICAL" (lit boolean) ())
         (list "DOUBLE" (lit double) ()) (list "FLOAT8" (lit double) ())
-        (list "DECIMAL" (lit decimal) "DECIMAL") (list "NUMERIC" (lit decimal) "DECIMAL")))
+        (list "DECIMAL" (lit decimal) "DECIMAL") (list "NUMERIC" (lit decimal) "DECIMAL")
+        (list "DATE" (lit date) "DATE") (list "TIME" (lit time) "TIME")
+        (list "TIMESTAMP" (lit timestamp) "TIMESTAMP") (list "DATETIME" (lit timestamp) ())
+        (list "INTERVAL" (lit interval) "INTERVAL")))
 
 ; The functions that answer one value for a group of rows
 (def sql-aggregates (list "count" "sum" "min" "max" "avg"))

@@ -44,7 +44,10 @@
 ;   (dec SCALED WIDTH SCALE TEXT)   a number with a point: SCALED its digits
 ;                                   as an integer, TEXT as it was written
 ;   (dbl TEXT)                      a number with an exponent, as written
-;   (cast E TYPE SHOWN)             SHOWN the type as a heading spells it
+;   (cast E TYPE SHOWN)             SHOWN the type as a heading spells it;
+;                                   a type before a string, DATE '2026-11-17',
+;                                   is a cast of the string
+;   (to-interval E UNIT)            INTERVAL E UNIT: E of the unit, an interval
 ;   (case WHENS ELSE)               WHENS a list of (CONDITION RESULT), ELSE
 ;                                   nil or an expression; CASE x WHEN v is
 ;                                   read as CASE WHEN x = v
@@ -131,6 +134,13 @@
   (fn (_ name qualifier)
     (list (lit col) name qualifier (sql-lower name)
           (if (null? qualifier) () (sql-lower qualifier)))))
+
+; The functions written with no parentheses
+(def %sql-bare-calls (list "current_date" "current_timestamp"))
+
+(def %sql-type-word?
+  (fn (_ text)
+    (List any? (fn (_ r) (str=? (first r) (sql-upper text))) sql-type-words)))
 
 ; The most digits a DECIMAL holds; a constant of more is a DOUBLE
 (def %sql-decimal-width 38)
@@ -243,6 +253,31 @@
           (match
             ((eq? tag (lit num)) (pair (%sql-number text (List third tok)) (rest ts)))
             ((%sql-kw? ts "CASE") (%sql-case (rest ts)))
+            ((and (eq? tag (lit id)) (not (null? (rest ts)))
+                  (eq? (first (List second ts)) (lit str)) (%sql-type-word? text))
+              (let ((type (%sql-type (list tok))))
+                (pair (pair (lit cast) (pair (list (lit str) (List second (List second ts)))
+                                             (first type)))
+                      (rest (rest ts)))))
+            ((and (%sql-word? ts "INTERVAL") (not (null? (rest ts))))
+              (let ((e (%sql-postfix (rest ts))))
+                (if (%sql-name? (rest e))
+                  (pair (list (lit to-interval) (first e) (List second (first (rest e))))
+                        (rest (rest e)))
+                  (%sql-near (rest e)))))
+            ((and (%sql-word? ts "EXTRACT") (%sql-op? (rest ts) "(")
+                  (%sql-name? (rest (rest ts))) (%sql-kw? (List drop 3 ts) "FROM"))
+              (let ((e (%sql-expr (List drop 4 ts))))
+                (if (%sql-op? (rest e) ")")
+                  (pair (list (lit call) "date_part"
+                              (list (list (lit str) (sql-upper (List second (List third ts))))
+                                    (first e))
+                              #f)
+                        (rest (rest e)))
+                  (%sql-near (rest e)))))
+            ((and (eq? tag (lit id)) (not (%sql-op? (rest ts) "("))
+                  (List includes? (sql-lower text) %sql-bare-calls))
+              (pair (list (lit call) (sql-lower text) () #f) (rest ts)))
             ((and (%sql-word? ts "CAST") (%sql-op? (rest ts) "("))
               (let ((e (%sql-expr (rest (rest ts)))))
                 (if (%sql-kw? (rest e) "AS")

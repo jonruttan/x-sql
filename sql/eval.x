@@ -7,9 +7,11 @@
 ; @license MIT No Attribution (MIT-0)
 ;
 ; A value is (TYPE . X): TYPE one of integer, bigint, hugeint, double,
-; varchar, boolean and null, or (decimal WIDTH SCALE), and X the x value,
-; nil for NULL.  A decimal's X is its digits as an integer: 1.50 is 150 at
-; scale 2.  A NULL keeps the type
+; varchar, boolean, date, time, timestamp, interval and null, or
+; (decimal WIDTH SCALE), and X the x value, nil for NULL.  A decimal's X is
+; its digits as an integer: 1.50 is 150 at scale 2.  A date, a time and a
+; timestamp are integers and an interval a list of three, as sql/time has
+; them.  A NULL keeps the type
 ; of the expression it came from; the constant NULL has the type null.
 ;
 ; Five classes hold what is chosen by a name: SqlNode evaluates an
@@ -27,6 +29,14 @@
 (import x/num/float)
 (import sql/words sql-lower sql-same-name? sql-binary-ops sql-aggregates)
 (import sql/lex sql-lex)
+(import sql/time
+  sql-micros-second sql-micros-minute sql-micros-hour sql-micros-day
+  sql-floor-div sql-floor-mod sql-civil sql-days sql-month-days
+  sql-date-text sql-clock-text sql-timestamp-text sql-interval-text
+  sql-date-read sql-clock-read sql-timestamp-read sql-interval-read
+  sql-interval-of sql-interval-add sql-interval-times sql-interval-negated
+  sql-timestamp-plus sql-micros-interval sql-interval-micros sql-day-names
+  sql-month-names sql-day-of-year sql-moment-diff sql-moment-trunc)
 (import sql/number
   sql-pow10 sql-double-text sql-double-of sql-double-scaled
   sql-double-integer sql-double-finite? sql-decimal-read sql-rescale
@@ -53,6 +63,10 @@
         (list (lit double) "DOUBLE" "double")
         (list (lit varchar) "VARCHAR" "varchar")
         (list (lit boolean) "BOOLEAN" "boolean")
+        (list (lit date) "DATE" "date")
+        (list (lit time) "TIME" "time")
+        (list (lit timestamp) "TIMESTAMP" "timestamp")
+        (list (lit interval) "INTERVAL" "interval")
         (list (lit null) "NULL" "\"null\"")))
 
 (def %sql-row
@@ -113,6 +127,10 @@
         ((eq? t (lit boolean)) (if x "true" "false"))
         ((eq? t (lit varchar)) x)
         ((%sql-double? t) (sql-double-text x))
+        ((eq? t (lit date)) (sql-date-text x))
+        ((eq? t (lit timestamp)) (sql-timestamp-text x))
+        ((eq? t (lit time)) (sql-clock-text x))
+        ((eq? t (lit interval)) (sql-interval-text x))
         ((%sql-decimal? t) (sql-decimal-text x (List second t) (List third t)))
         (#t (Str8 str x))))))
 
@@ -251,12 +269,73 @@
 (def %sql-numeric-or-null?
   (fn (_ t) (or (%sql-numeric? t) (%sql-null-type? t))))
 
+; --- dates and times in arithmetic --------------------------------------------
+
+(def %sql-temporal-types (list (lit date) (lit time) (lit timestamp) (lit interval)))
+(def %sql-temporal? (fn (_ t) (List includes? t %sql-temporal-types)))
+
+; A date or a timestamp as a moment, in microseconds
+(def %sql-moment
+  (fn (_ v) (if (eq? (first v) (lit date)) (* (rest v) sql-micros-day) (rest v))))
+
+(def %sql-moment-type?
+  (fn (_ t) (or (eq? t (lit date)) (eq? t (lit timestamp)))))
+
+; T, or NULL of it when either operand is NULL, else what COMPUTE answers
+(def %sql-unless-null
+  (fn (_ t a b compute)
+    (pair t (if (or (%sql-null? a) (%sql-null? b)) () (compute)))))
+
+; + and - where a date, a time, a timestamp or an interval is an operand,
+; and * of an interval by an integer.  A date and a count of days is a
+; date; two dates apart are days; a date or a timestamp and an interval is
+; a timestamp; two moments apart are an interval; a time and an interval
+; is a time, on the clock of one day.
+(def %sql-temporal-arith
+  (fn (_ sign a b)
+    (let ((ta (first a)) (tb (first b)) (plus (str=? sign "+")) (minus (str=? sign "-")))
+      (match
+        ((and (eq? ta (lit date)) (%sql-int? tb) (or plus minus))
+          (%sql-unless-null (lit date) a b
+            (fn (_) (if plus (+ (rest a) (rest b)) (- (rest a) (rest b))))))
+        ((and (%sql-int? ta) (eq? tb (lit date)) plus)
+          (%sql-unless-null (lit date) a b (fn (_) (+ (rest a) (rest b)))))
+        ((and (eq? ta (lit date)) (eq? tb (lit date)) minus)
+          (%sql-unless-null (lit bigint) a b (fn (_) (- (rest a) (rest b)))))
+        ((and (%sql-moment-type? ta) (eq? tb (lit interval)) (or plus minus))
+          (%sql-unless-null (lit timestamp) a b
+            (fn (_) (sql-timestamp-plus (%sql-moment a)
+                      (if plus (rest b) (sql-interval-negated (rest b)))))))
+        ((and (eq? ta (lit interval)) (%sql-moment-type? tb) plus)
+          (%sql-unless-null (lit timestamp) a b
+            (fn (_) (sql-timestamp-plus (%sql-moment b) (rest a)))))
+        ((and (%sql-moment-type? ta) (%sql-moment-type? tb) minus)
+          (%sql-unless-null (lit interval) a b
+            (fn (_) (sql-micros-interval (- (%sql-moment a) (%sql-moment b))))))
+        ((and (eq? ta (lit time)) (eq? tb (lit interval)) (or plus minus))
+          (%sql-unless-null (lit time) a b
+            (fn (_) (sql-floor-mod
+                      (if plus (+ (rest a) (List third (rest b))) (- (rest a) (List third (rest b))))
+                      sql-micros-day))))
+        ((and (eq? ta (lit interval)) (eq? tb (lit interval)) (or plus minus))
+          (%sql-unless-null (lit interval) a b
+            (fn (_) (sql-interval-add (rest a)
+                      (if plus (rest b) (sql-interval-negated (rest b)))))))
+        ((and (eq? ta (lit interval)) (%sql-int? tb) (str=? sign "*"))
+          (%sql-unless-null (lit interval) a b (fn (_) (sql-interval-times (rest a) (rest b)))))
+        ((and (%sql-int? ta) (eq? tb (lit interval)) (str=? sign "*"))
+          (%sql-unless-null (lit interval) a b (fn (_) (sql-interval-times (rest b) (rest a)))))
+        (#t
+          (error (Str8 str "Binder Error: No function matches the given name and argument types '"
+                           sign "(" (%sql-type-name ta) ", " (%sql-type-name tb) ")'.")))))))
+
 ; + - or *: integers in the wider type, a double when either is one, and
 ; exactly as a decimal otherwise
 (def %sql-arith
   (fn (_ sign word f a b)
     (let ((ta (first a)) (tb (first b)))
       (match
+        ((or (%sql-temporal? ta) (%sql-temporal? tb)) (%sql-temporal-arith sign a b))
         ((not (and (%sql-numeric-or-null? ta) (%sql-numeric-or-null? tb)))
           (%sql-arith-type sign a b))
         ((or (%sql-double? ta) (%sql-double? tb)) (%sql-double-arith f a b))
@@ -305,6 +384,16 @@
                 (if (< sx sy) -1 (if (= sx sy) 0 1))))))
         ((and (eq? ta (lit varchar)) (eq? tb (lit varchar)))
           (if (Str8 <? x y) -1 (if (Str8 =? x y) 0 1)))
+        ((and (%sql-temporal? ta) (eq? tb (lit varchar))) (%sql-order a (%sql-as b ta)))
+        ((and (eq? ta (lit varchar)) (%sql-temporal? tb)) (%sql-order (%sql-as a tb) b))
+        ((and (%sql-moment-type? ta) (%sql-moment-type? tb))
+          (let ((mx (%sql-moment a)) (my (%sql-moment b)))
+            (if (< mx my) -1 (if (= mx my) 0 1))))
+        ((and (eq? ta (lit time)) (eq? tb (lit time)))
+          (if (< x y) -1 (if (= x y) 0 1)))
+        ((and (eq? ta (lit interval)) (eq? tb (lit interval)))
+          (let ((mx (sql-interval-micros x)) (my (sql-interval-micros y)))
+            (if (< mx my) -1 (if (= mx my) 0 1))))
         ((and (eq? ta (lit boolean)) (eq? tb (lit boolean)))
           (if (eq? x y) 0 (if y -1 1)))
         (#t
@@ -486,6 +575,105 @@
     (let ((q (Num quotient n unit)))
       (if (and (< n 0) (not (= (* q unit) n))) (- q 1) q))))
 
+; --- the parts of a date and a time ------------------------------------------
+
+; A date or a timestamp as (YEAR MONTH DAY WEEKDAY)
+(def %sql-civil-of
+  (fn (_ v) (sql-civil (sql-floor-div (%sql-moment v) sql-micros-day))))
+
+; The time of day of V, or of an interval its time, in microseconds; a
+; date has none
+(def %sql-clock-of
+  (fn (_ v)
+    (match
+      ((eq? (first v) (lit date)) 0)
+      ((eq? (first v) (lit interval)) (List third (rest v)))
+      (#t (sql-floor-mod (rest v) sql-micros-day)))))
+
+; ARGS are dates or timestamps, or NULL constants, or NAME has no such form
+(def %sql-moments
+  (fn (_ name all args)
+    (unless (List all? (fn (_ a) (or (%sql-moment-type? (first a)) (%sql-null-type? (first a)))) args)
+      (%sql-no-match name all))))
+
+; A part of a date, a time, a timestamp or an interval: a static method a
+; part's name, of a value that is not NULL
+(def-class SqlPart ()
+  (static
+    (method year (self v)
+      (if (eq? (first v) (lit interval)) (Num quotient (first (rest v)) 12)
+        (first (%sql-civil-of v))))
+    (method month (self v)
+      (if (eq? (first v) (lit interval)) (Num remainder (first (rest v)) 12)
+        (List second (%sql-civil-of v))))
+    (method day (self v)
+      (if (eq? (first v) (lit interval)) (List second (rest v))
+        (List third (%sql-civil-of v))))
+    (method hour (self v) (Num quotient (%sql-clock-of v) sql-micros-hour))
+    (method minute (self v)
+      (Num remainder (Num quotient (%sql-clock-of v) sql-micros-minute) 60))
+    (method second (self v)
+      (Num remainder (Num quotient (%sql-clock-of v) sql-micros-second) 60))
+    (method dayofweek (self v) (List ref 3 (%sql-civil-of v)))
+    (method dow (self v) (SqlPart dayofweek v))
+    (method dayofyear (self v)
+      (sql-day-of-year (sql-floor-div (%sql-moment v) sql-micros-day)))
+    (method doy (self v) (SqlPart dayofyear v))
+    (method quarter (self v) (+ (Num quotient (- (List second (%sql-civil-of v)) 1) 3) 1))))
+
+; The part NAME names of the one value of ARGS, a BIGINT
+(def %sql-part
+  (fn (_ name args)
+    (%sql-arity name args (list 1))
+    (let ((v (first args)) (part (class-static-ref SqlPart (Str8 ->sym (sql-lower name)))))
+      (when (null? part)
+        (error (Str8 append "Conversion Error: extract specifier \"" name "\" not recognized")))
+      (unless (or (%sql-temporal? (first v)) (%sql-null-type? (first v)))
+        (%sql-no-match (sql-lower name) args))
+      (when (and (eq? (first v) (lit time))
+                 (not (List includes? (sql-lower name) (list "hour" "minute" "second"))))
+        (%sql-no-match (sql-lower name) args))
+      (pair (lit bigint) (if (%sql-null? v) () (part SqlPart v))))))
+
+(def %sql-two (fn (_ n) (Str8 pad-left 2 #\0 (Str8 str n))))
+
+; What a letter after % stands for in a format, for the moment MICROS;
+; nil for a letter that stands for nothing here
+(def %sql-directive
+  (fn (_ letter micros)
+    (let ((civil (sql-civil (sql-floor-div micros sql-micros-day)))
+          (clock (sql-floor-mod micros sql-micros-day)))
+      (match
+        ((= letter 89) (Str8 str (first civil)))                                   ; Y
+        ((= letter 121) (%sql-two (Num remainder (first civil) 100)))              ; y
+        ((= letter 109) (%sql-two (List second civil)))                            ; m
+        ((= letter 100) (%sql-two (List third civil)))                             ; d
+        ((= letter 72) (%sql-two (Num quotient clock sql-micros-hour)))            ; H
+        ((= letter 77) (%sql-two (Num remainder (Num quotient clock sql-micros-minute) 60)))  ; M
+        ((= letter 83) (%sql-two (Num remainder (Num quotient clock sql-micros-second) 60)))  ; S
+        ((= letter 66) (List ref (- (List second civil) 1) sql-month-names))       ; B
+        ((= letter 98) (Str8 sub 0 3 (List ref (- (List second civil) 1) sql-month-names)))   ; b
+        ((= letter 65) (List ref (List ref 3 civil) sql-day-names))                ; A
+        ((= letter 97) (Str8 sub 0 3 (List ref (List ref 3 civil) sql-day-names))) ; a
+        ((= letter 106)                                                            ; j
+          (Str8 pad-left 3 #\0 (Str8 str (sql-day-of-year (sql-floor-div micros sql-micros-day)))))
+        ((= letter 37) "%")
+        (#t ())))))
+
+; FORMAT from I with each % and its letter replaced for the moment MICROS
+(def %sql-strftime
+  (fn (self format i micros)
+    (let ((at (Str8 index-of "%" (Str8 sub i (Str8 length format) format))))
+      (if (or (null? at) (>= (+ i at 1) (Str8 length format)))
+        (Str8 sub i (Str8 length format) format)
+        (let ((text (%sql-directive (%sql-byte format (+ i at 1)) micros)))
+          (when (null? text)
+            (error (Str8 append "Invalid Input Error: Failed to parse format specifier "
+                                format ": Unrecognized format for strftime/strptime: %"
+                                (Str8 sub (+ i at 1) 1 format))))
+          (Str8 append (Str8 sub i at format) text
+                       (self format (+ i at 2) micros)))))))
+
 ; The functions of one row's values.  A function is a static method named
 ; in lower case, taking its arguments' values and its node.
 (def-class SqlFunction ()
@@ -619,6 +807,86 @@
           a)))
     (method greatest (self args node) (%sql-extreme-of "greatest" args (fn (_ c) (> c 0))))
     (method least (self args node) (%sql-extreme-of "least" args (fn (_ c) (< c 0))))
+    (method year (self args node) (%sql-part "year" args))
+    (method month (self args node) (%sql-part "month" args))
+    (method day (self args node) (%sql-part "day" args))
+    (method hour (self args node) (%sql-part "hour" args))
+    (method minute (self args node) (%sql-part "minute" args))
+    (method second (self args node) (%sql-part "second" args))
+    (method dayofweek (self args node) (%sql-part "dayofweek" args))
+    (method dayofyear (self args node) (%sql-part "dayofyear" args))
+    (method quarter (self args node) (%sql-part "quarter" args))
+    (method date_part (self args node)
+      (%sql-arity "date_part" args (list 2))
+      (%sql-texts "date_part" (list (first args)))
+      (if (%sql-null? (first args)) (pair (lit bigint) ())
+        (%sql-part (rest (first args)) (rest args))))
+    ; The start of the unit a moment is in: a timestamp, whatever was given
+    (method date_trunc (self args node)
+      (%sql-arity "date_trunc" args (list 2))
+      (%sql-texts "date_trunc" (list (first args)))
+      (%sql-moments "date_trunc" args (rest args))
+      (pair (lit timestamp)
+        (if (%sql-any-null? args) ()
+          (sql-moment-trunc (rest (first args)) (%sql-moment (List second args))))))
+    ; How many of a unit begin between two moments
+    (method date_diff (self args node)
+      (%sql-arity "date_diff" args (list 3))
+      (%sql-texts "date_diff" (list (first args)))
+      (%sql-moments "date_diff" args (rest args))
+      (pair (lit bigint)
+        (if (%sql-any-null? args) ()
+          (sql-moment-diff (rest (first args)) (%sql-moment (List second args))
+                           (%sql-moment (List third args))))))
+    (method datediff (self args node) (SqlFunction date_diff args node))
+    (method dayname (self args node)
+      (%sql-arity "dayname" args (list 1))
+      (%sql-moments "dayname" args args)
+      (pair (lit varchar)
+        (if (%sql-any-null? args) ()
+          (List ref (List ref 3 (%sql-civil-of (first args))) sql-day-names))))
+    (method monthname (self args node)
+      (%sql-arity "monthname" args (list 1))
+      (%sql-moments "monthname" args args)
+      (pair (lit varchar)
+        (if (%sql-any-null? args) ()
+          (List ref (- (List second (%sql-civil-of (first args))) 1) sql-month-names))))
+    (method last_day (self args node)
+      (%sql-arity "last_day" args (list 1))
+      (%sql-moments "last_day" args args)
+      (pair (lit date)
+        (if (%sql-any-null? args) ()
+          (let ((civil (%sql-civil-of (first args))))
+            (sql-days (first civil) (List second civil)
+                      (sql-month-days (first civil) (List second civil)))))))
+    (method make_date (self args node)
+      (%sql-arity "make_date" args (list 3))
+      (unless (List all? (fn (_ a) (or (%sql-int? (first a)) (%sql-null-type? (first a)))) args)
+        (%sql-no-match "make_date" args))
+      (pair (lit date)
+        (if (%sql-any-null? args) ()
+          (let ((days (sql-days (rest (first args)) (rest (List second args))
+                                (rest (List third args)))))
+            (if (null? days)
+              (error (Str8 str "Conversion Error: Date out of range: " (rest (first args)) "-"
+                               (rest (List second args)) "-" (rest (List third args))))
+              days)))))
+    (method strftime (self args node)
+      (%sql-arity "strftime" args (list 2))
+      (%sql-moments "strftime" args (list (first args)))
+      (%sql-texts "strftime" (rest args))
+      (pair (lit varchar)
+        (if (%sql-any-null? args) ()
+          (%sql-strftime (rest (List second args)) 0 (%sql-moment (first args))))))
+    ; The clock's time, in UTC: there is no time zone here
+    (method now (self args node)
+      (%sql-arity "now" args (list 0))
+      (pair (lit timestamp) (* (Sys now) sql-micros-second)))
+    (method current_timestamp (self args node) (SqlFunction now args node))
+    (method current_date (self args node)
+      (%sql-arity "current_date" args (list 0))
+      (pair (lit date) (sql-floor-div (* (Sys now) sql-micros-second) sql-micros-day)))
+    (method today (self args node) (SqlFunction current_date args node))
     (method typeof (self args node)
       (%sql-arity "typeof" args (list 1))
       (pair (lit varchar)
@@ -877,6 +1145,14 @@
             (List second node)))
     (method dbl (self node scope)
       (pair (lit double) (sql-double-of (List second node))))
+    (method to-interval (self node scope)
+      (let ((v (sql-eval (List second node) scope)))
+        (unless (%sql-numeric-or-null? (first v))
+          (error (Str8 str "Binder Error: No function matches the given name and argument types 'to_"
+                           (sql-lower (List third node)) "(" (%sql-type-name (first v)) ")'.")))
+        (pair (lit interval)
+          (if (%sql-null? v) ()
+            (sql-interval-of (%sql-cast-integer v (lit bigint)) (List third node))))))
     (method cast (self node scope)
       (pair (List third node)
             (sql-cast (sql-eval (List second node) scope) (List third node))))
@@ -1003,7 +1279,10 @@
   (list (pair "substring" "\"substring\"") (pair "trim" "\"trim\"")
         (pair "replace" "\"replace\"") (pair "left" "\"left\"")
         (pair "right" "\"right\"") (pair "nullif" "\"nullif\"")
-        (pair "coalesce" "COALESCE") (pair "ifnull" "COALESCE")))
+        (pair "coalesce" "COALESCE") (pair "ifnull" "COALESCE")
+        (pair "year" "\"year\"") (pair "month" "\"month\"") (pair "day" "\"day\"")
+        (pair "hour" "\"hour\"") (pair "minute" "\"minute\"")
+        (pair "second" "\"second\"") (pair "quarter" "\"quarter\"")))
 
 (def %sql-call-name
   (fn (_ name)
@@ -1054,6 +1333,15 @@
     (method int (self node) (Str8 str (List second node)))
     (method dec (self node) (List ref 4 node))
     (method dbl (self node) (List second node))
+    ; DuckDB's spelling of INTERVAL 2 HOUR: the count as a whole number, a
+    ; BIGINT for a unit of time and an INTEGER for one of the calendar
+    (method to-interval (self node)
+      (let ((unit (sql-lower (List third node))))
+        (Str8 append "to_" unit (if (Str8 ends? "s" unit) "" "s")
+                     "(CAST(trunc(CAST(" (sql-expr-name (List second node))
+                     " AS DOUBLE)) AS "
+                     (if (= (List third (sql-interval-of 1 unit)) 0) "INTEGER" "BIGINT")
+                     "))")))
     (method cast (self node)
       (Str8 append "CAST(" (sql-expr-name (List second node)) " AS "
                    (List ref 3 node) ")"))
@@ -1212,6 +1500,22 @@
         (#t (error (Str8 str "Not implemented Error: casting "
                              (%sql-type-name from) " to a decimal")))))))
 
+(def %sql-no-cast
+  (fn (_ from t)
+    (error (Str8 str "Not implemented Error: casting " (%sql-type-name from)
+                     " to " (%sql-type-name t)))))
+
+; What READ makes of TEXT, or the error of a KIND that is not one: FORMAT
+; when the text has not its form, and out of range when it has
+(def %sql-read-or
+  (fn (_ read text kind format)
+    (let ((x (read text)))
+      (match
+        ((null? x) (error (Str8 append "Conversion Error: " format)))
+        ((eq? x (lit out-of-range))
+          (error (Str8 append "Conversion Error: " kind " field value out of range: \"" text "\"")))
+        (#t x)))))
+
 (def-class SqlCast ()
   (static
     (method varchar (self v t) (sql-value-text v))
@@ -1240,6 +1544,45 @@
           (error (Str8 str "Conversion Error: Casting value \"" (sql-value-text v)
                            "\" to type " (%sql-type-name t)
                            " failed: value is out of range!")))))
+    (method date (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((eq? from (lit date)) x)
+          ((eq? from (lit timestamp)) (sql-floor-div x sql-micros-day))
+          ((eq? from (lit varchar))
+            (%sql-read-or sql-date-read x "date"
+              (Str8 append "invalid date field format: \"" x "\", expected format is (YYYY-MM-DD)")))
+          (#t (%sql-no-cast from t)))))
+    (method timestamp (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((eq? from (lit timestamp)) x)
+          ((eq? from (lit date)) (* x sql-micros-day))
+          ((eq? from (lit varchar))
+            (%sql-read-or sql-timestamp-read x "timestamp"
+              (Str8 append "invalid timestamp field format: \"" x
+                           "\", expected format is (YYYY-MM-DD HH:MM:SS[.US][±HH[:MM[:SS]]| ZONE])")))
+          (#t (%sql-no-cast from t)))))
+    (method time (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((eq? from (lit time)) x)
+          ((eq? from (lit timestamp)) (sql-floor-mod x sql-micros-day))
+          ((eq? from (lit varchar))
+            (%sql-read-or sql-clock-read x "time"
+              (Str8 append "invalid time field format: \"" x
+                           "\", expected format is ([YYYY-MM-DD ]HH:MM:SS[.MS])")))
+          (#t (%sql-no-cast from t)))))
+    (method interval (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((eq? from (lit interval)) x)
+          ((eq? from (lit varchar))
+            (let ((read (sql-interval-read x)))
+              (if (null? read)
+                (error (Str8 append "Conversion Error: Could not convert string '" x "' to INTERVAL"))
+                read)))
+          (#t (%sql-no-cast from t)))))
     (method boolean (self v t)
       (let ((from (first v)) (x (rest v)))
         (match
