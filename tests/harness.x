@@ -34,12 +34,14 @@
   (method before (self) (self text)))
 (import x/type/dict)
 (import x/codec/bytes)
-(import sql/pg PgLink pg-start pg-query pg-md5-password pg-scram-bare pg-scram-final)
-(import sql/base sql-url-parse sql-remote-text)
+(import sql/link SqlLink)
+(import sql/pg pg-start pg-query pg-md5-password pg-scram-bare pg-scram-final)
+(import sql/my my-start my-query my-auth)
+(import sql/base sql-url-parse sql-remote-text sql-pg-results)
 
 ; A link whose server is the bytes HEX spells, for a case with no server.
 ; What is sent to it is shown, a write a line.
-(def pg-canned
+(def canned-link
   (fn (_ hex)
     (let ((left (Dict from-plist (list (lit run) (Bytes of-hex hex)))))
       (let ((send (fn (_ region) (display "sent ") (display (Bytes hex region)) (newline)))
@@ -47,4 +49,4 @@
                     (let ((run (left get (lit run))))
                       (left del! (lit run))
                       (if (null? run) () (pair (first run) (Bytes length run)))))))
-        (new PgLink send send recv recv)))))
+        (new SqlLink send send recv recv)))))

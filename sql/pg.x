@@ -9,11 +9,8 @@
 ; Protocol 3.0 (PostgreSQL's "Frontend/Backend Protocol"): the startup
 ; message, authentication in the clear, by MD5 and by SCRAM-SHA-256
 ; (RFC 5802, RFC 7677), and the simple query, whose results come as text.
-; The connection is not encrypted: there is no TLS here yet.
-;
-; A PgLink is the two ends of a byte stream as functions, so the protocol
-; is the same over a socket and over bytes a spec supplies.  A message is
-; a type byte, a four-byte length that counts itself, and a body.
+; It speaks over a SqlLink (sql/link).  A message is a type byte, a
+; four-byte length that counts itself, and a body.
 ;
 ; A query answers a list with an entry for each statement the server ran:
 ;   (NAMES TYPES ROWS TAG)   NAMES the columns, TYPES their type OIDs,
@@ -31,13 +28,12 @@
 (import x/codec/sha256)
 (import x/codec/md5)
 (import x/codec/base64)
-(import x/sys/socket)
+(import sql/link sql-link-text)
 (import sql/number sql-decimal-read)
 
 ; --- bytes -------------------------------------------------------------------
 
-; A region's bytes as a string.  For text: a NUL among them ends it.
-(def %pg-text (fn (_ region) (first (Bytes copy region))))
+(def %pg-text sql-link-text)
 
 (def %pg-nul (Bytes of-list (list 0)))
 
@@ -60,43 +56,27 @@
 (def %pg-put-cstring
   (fn (_ w text) (Bytes put w text) (Bytes put-u8 w 0)))
 
-; --- the link ----------------------------------------------------------------
+; --- messages ----------------------------------------------------------------
 
 ; How many bytes a message's type and length take
 (def %pg-head 5)
 
-(def-class PgLink ()
-  (doc send "A function of a region: every byte of it goes to the server")
-  (doc recv "A function of nothing: the next bytes from the server as (STRING . COUNT), nil when it has closed")
-  (doc (held (Bytes of "")) "The bytes received and not yet taken")
-
-  ; The next N bytes from the server, as a region
-  (method take (self n)
-    (if (>= (Bytes length (self held)) n)
-      (let ((held (self held)))
-        (set-field! (lit held) (Bytes sub held n (- (Bytes length held) n)))
-        (Bytes sub held 0 n))
-      (let ((run ((self recv))))
-        (when (null? run)
-          (error "Connection Error: the server closed the connection"))
-        (set-field! (lit held)
-          (Bytes join (self held) (Bytes region (first run) 0 (rest run))))
-        (self take n))))
-
-  ; The next message from the server: (TYPE . BODY), TYPE the byte it
-  ; opens with and BODY a region
-  (method message (self)
-    (let ((head (self take %pg-head)))
+; The next message from the server: (TYPE . BODY), TYPE the byte it opens
+; with and BODY a region
+(def %pg-message
+  (fn (_ link)
+    (let ((head (link take %pg-head)))
       (pair (Bytes ref head 0)
-            (self take (- (%pg-uint head 1 4) 4)))))
+            (link take (- (%pg-uint head 1 4) 4))))))
 
-  ; A message to the server: TYPE, then BODY's length and BODY
-  (method put (self type body)
+; A message to the server: TYPE, then BODY's length and BODY
+(def %pg-put
+  (fn (_ link type body)
     (let ((w (Bytes writer)))
       (Bytes put-u8 w type)
       (Bytes put-u32 w (+ (Bytes length body) 4))
       (Bytes put w body)
-      ((self send) (Bytes written w)))))
+      ((link send) (Bytes written w)))))
 
 ; A body of strings, each ended by a NUL
 (def %pg-strings
@@ -248,7 +228,7 @@
 ; The next message that is not a notice or a parameter; an error is raised
 (def %pg-expect
   (fn (self link)
-    (let ((m (link message)))
+    (let ((m (%pg-message link)))
       (match
         ((= (first m) %pg-type-error) (error (%pg-report (rest m))))
         ((= (first m) %pg-type-auth) m)
@@ -273,13 +253,13 @@
         (%pg-put-cstring w "SCRAM-SHA-256")
         (Bytes put-u32 w (Str8 length first-message))
         (Bytes put w first-message)
-        (link put %pg-type-password (Bytes copy (Bytes written w)))
+        (%pg-put link %pg-type-password (Bytes copy (Bytes written w)))
         (let ((m (%pg-expect link)))
           (unless (= (%pg-uint (rest m) 0 4) %pg-auth-sasl-continue)
             (error "Protocol Error: SCRAM did not continue"))
           (let ((final (pg-scram-final password bare
                          (%pg-text (Bytes sub (rest m) 4 (- (Bytes length (rest m)) 4))))))
-            (link put %pg-type-password (Bytes of (first final)))
+            (%pg-put link %pg-type-password (Bytes of (first final)))
             (let ((last (%pg-expect link)))
               (unless (and (= (%pg-uint (rest last) 0 4) %pg-auth-sasl-final)
                            (str=? (%pg-text (Bytes sub (rest last) 4 (- (Bytes length (rest last)) 4)))
@@ -304,11 +284,11 @@
           ((= code %pg-auth-ok) ())
           ((= code %pg-auth-clear)
             (do (%pg-need-password password)
-                (link put %pg-type-password (%pg-strings (list password)))
+                (%pg-put link %pg-type-password (%pg-strings (list password)))
                 (self link user password)))
           ((= code %pg-auth-md5)
             (do (%pg-need-password password)
-                (link put %pg-type-password
+                (%pg-put link %pg-type-password
                   (%pg-strings (list (pg-md5-password user password (Bytes sub (rest m) 4 4)))))
                 (self link user password)))
           ((= code %pg-auth-sasl)
@@ -372,7 +352,7 @@
 ; text once one has come, raised when the server is ready again.
 (def %pg-answers
   (fn (self link done columns rows failed)
-    (let ((m (link message)))
+    (let ((m (%pg-message link)))
       (let ((type (first m)) (body (rest m)))
         (match
           ((= type %pg-type-ready)
@@ -393,28 +373,15 @@
 ; TEXT run by the server as a simple query: every statement's result
 (def pg-query
   (fn (_ link text)
-    (link put %pg-type-query (%pg-strings (list text)))
+    (%pg-put link %pg-type-query (%pg-strings (list text)))
     (%pg-answers link () () () ())))
 
-; --- a socket ----------------------------------------------------------------
-
-; The most bytes one read of the socket takes
-(def %pg-read-size 65536)
-
-; A link over a TCP connection to HOST, a name or an address, at PORT
-(def pg-socket-link
-  (fn (_ host port)
-    (let ((fd (Socket tcp-connect (Socket resolve host) port)))
-      (let ((send (fn (_ region)
-                    (let ((whole (Bytes copy region)))
-                      (Socket send-run fd (first whole) (Bytes length whole)))))
-            (recv (fn (_) (Socket recv-run fd %pg-read-size))))
-        (new PgLink send send recv recv)))))
+; --- the end -----------------------------------------------------------------
 
 ; The session ended: the server told, where a link can tell it
 (def pg-finish
   (fn (_ link)
-    (guard (_ ()) (link put %pg-type-terminate (Bytes of "")))))
+    (guard (_ ()) (%pg-put link %pg-type-terminate (Bytes of "")))))
 
 ; --- types -------------------------------------------------------------------
 
@@ -445,5 +412,5 @@
       (if (null? row) #f (List third row)))))
 
 (provide sql/pg
-  PgLink pg-start pg-query pg-finish pg-socket-link pg-md5-password
+  pg-start pg-query pg-finish pg-md5-password
   pg-scram-bare pg-scram-final pg-type-name pg-type-number?)

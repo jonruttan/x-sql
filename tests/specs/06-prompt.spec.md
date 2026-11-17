@@ -126,13 +126,13 @@ zebra
 
 ## prompt servers
 
-### .connect refuses what is not a postgres:// URL
+### .connect refuses a URL of a server it has no driver for
 
 ```x
-(sql-eval-line ".connect mysql://me@h/d")
+(sql-eval-line ".connect oracle://me@h/d")
 ```
 ---
-    Connection Error: not a postgres:// URL, mysql://me@h/d
+    Connection Error: not a postgres://, mysql:// or mariadb:// URL, oracle://me@h/d
 
 ### .disconnect with no server is nothing, and statements still run here
 
