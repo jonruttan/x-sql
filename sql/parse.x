@@ -12,13 +12,18 @@
 ; %, and a sign.
 ;
 ; A statement, its head the name sql/exec's SqlStatement knows it by:
-;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET)
+;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET GROUP HAVING DISTINCT)
 ;       ITEMS   a list of (EXPR ALIAS), ALIAS nil or text; EXPR may be
 ;               (star QUALIFIER), every column, or every column of one table
-;       FROM    nil, or (TABLE ALIAS)
-;       WHERE   nil or an expression
+;       FROM    nil, or a list: (TABLE ALIAS) first, then a
+;               (KIND TABLE ALIAS ON) for each table joined to what is
+;               before it, KIND inner, left, right, full or cross and ON
+;               nil or an expression
+;       WHERE, HAVING   nil or an expression
 ;       ORDER   a list of (EXPR DESCENDING NULLS), NULLS nil, first or last
 ;       LIMIT, OFFSET   nil or an expression
+;       GROUP   nil, the name all, or a list of expressions
+;       DISTINCT   whether rows that repeat are dropped
 ;   (create TABLE COLUMNS REPLACE IF-NOT-EXISTS)   COLUMNS a list of (NAME TYPE)
 ;   (insert TABLE NAMES ROWS)   NAMES nil or the columns named; ROWS a list
 ;                               of lists of expressions
@@ -26,6 +31,7 @@
 ;
 ; An expression, its head the name sql/eval's classes know it by:
 ;   (int N)  (str TEXT)  (bool B)  (null)  (col NAME QUALIFIER)
+;   (call NAME ARGS DISTINCT)   ARGS expressions, or one (star ()) in count(*)
 ;   (neg E)  (not E)  (is-null E NEGATED)
 ;   (and A B)  (or A B)
 ;   (bin OP A B)            OP a name from sql/words' sql-binary-ops
@@ -115,12 +121,31 @@
                 (if (%sql-op? (rest e) ")")
                   (pair (first e) (rest (rest e)))
                   (%sql-near (rest e)))))
+            ((and (eq? tag (lit id)) (%sql-op? (rest ts) "("))
+              (%sql-call text (rest (rest ts))))
             ((%sql-name? ts)
               (if (and (%sql-op? (rest ts) ".") (%sql-name? (rest (rest ts))))
                 (pair (list (lit col) (List second (List third ts)) text)
                       (rest (rest (rest ts))))
                 (pair (list (lit col) text ()) (rest ts))))
             (#t (%sql-near ts))))))))
+
+; A call's arguments, TS after its opening parenthesis: none, a star, or
+; expressions, after DISTINCT or not
+(def %sql-call
+  (fn (_ name ts)
+    (match
+      ((%sql-op? ts ")") (pair (list (lit call) name () #f) (rest ts)))
+      ((and (%sql-op? ts "*") (%sql-op? (rest ts) ")"))
+        (pair (list (lit call) name (list (list (lit star) ())) #f)
+              (rest (rest ts))))
+      (#t
+        (let ((distinct (%sql-kw? ts "DISTINCT")))
+          (let ((args (%sql-list %sql-expr (if distinct (rest ts) ts))))
+            (if (%sql-op? (rest args) ")")
+              (pair (list (lit call) name (first args) distinct)
+                    (rest (rest args)))
+              (%sql-near (rest args)))))))))
 
 ; A sign.  A minus on an integer constant is the constant, so the least
 ; INTEGER is one.
@@ -223,8 +248,7 @@
 
 ; The clauses a SELECT takes that are not read yet
 (def %sql-unread
-  (list "GROUP" "HAVING" "UNION" "EXCEPT" "INTERSECT" "JOIN" "ON" "USING"
-        "DISTINCT" "WITH"))
+  (list "UNION" "EXCEPT" "INTERSECT" "USING" "NATURAL" "WITH"))
 
 (def %sql-refuse-unread
   (fn (_ ts)
@@ -238,8 +262,8 @@
   (fn (_ ts)
     (if (%sql-name? ts) (List second (first ts)) (%sql-near ts))))
 
-; What follows FROM: a table and its alias, after AS or bare
-(def %sql-from
+; A table and its alias, after AS or bare
+(def %sql-source
   (fn (_ ts)
     (let ((table (%sql-name ts)) (after (rest ts)))
       (match
@@ -248,6 +272,54 @@
         ((%sql-name? after)
           (pair (list table (List second (first after))) (rest after)))
         (#t (pair (list table ()) after))))))
+
+; The kind of join TS starts with and the tokens after its JOIN, or nil:
+; JOIN alone is an inner one, and OUTER after LEFT, RIGHT or FULL says
+; nothing more
+(def %sql-join-kind
+  (fn (_ ts)
+    (let ((row (List find (fn (_ r) (%sql-kw? ts (first r)))
+                 (list (list "INNER" (lit inner)) (list "LEFT" (lit left))
+                       (list "RIGHT" (lit right)) (list "FULL" (lit full))
+                       (list "CROSS" (lit cross))))))
+      (let ((after (if (null? row) ts
+                     (if (%sql-kw? (rest ts) "OUTER") (rest (rest ts)) (rest ts)))))
+        (match
+          ((%sql-kw? after "JOIN")
+            (pair (if (null? row) (lit inner) (List second row)) (rest after)))
+          ((null? row) ())
+          (#t (%sql-near after)))))))
+
+; The tables joined to the first, TS after it: each after a comma or a JOIN
+(def %sql-joins
+  (fn (self ts)
+    (if (%sql-op? ts ",")
+      (let ((source (%sql-source (rest ts))))
+        (let ((more (self (rest source))))
+          (pair (pair (pair (lit cross) (List append (first source) (list ())))
+                      (first more))
+                (rest more))))
+      (let ((kind (%sql-join-kind ts)))
+        (if (null? kind) (pair () ts)
+          (let ((source (%sql-source (rest kind))))
+            (%sql-refuse-unread (rest source))
+            (let ((on (if (%sql-kw? (rest source) "ON")
+                        (%sql-expr (rest (rest source)))
+                        (pair () (rest source)))))
+              (when (and (null? (first on)) (not (eq? (first kind) (lit cross))))
+                (%sql-near (rest on)))
+              (let ((more (self (rest on))))
+                (pair (pair (pair (first kind)
+                                  (List append (first source) (list (first on))))
+                            (first more))
+                      (rest more))))))))))
+
+; What follows FROM: the first table, then the tables joined to it
+(def %sql-from
+  (fn (_ ts)
+    (let ((source (%sql-source ts)))
+      (let ((joins (%sql-joins (rest source))))
+        (pair (pair (first source) (first joins)) (rest joins))))))
 
 ; One ORDER BY term: an expression, ASC or DESC, NULLS FIRST or LAST
 (def %sql-order-term
@@ -272,48 +344,71 @@
           (pair (pair (first i) (first more)) (rest more)))
         (pair (list (first i)) (rest i))))))
 
-; The clauses after the table: WHERE, ORDER BY, LIMIT and OFFSET, each nil
-; when absent, as (WHERE ORDER LIMIT OFFSET)
+; One optional clause: (VALUE . tokens-left), VALUE nil when TS does not
+; start with WORDS, else what READ reads after them
+(def %sql-clause
+  (fn (_ words read ts)
+    (let ((after (%sql-after ts words)))
+      (if (null? after) (pair () ts) (read (first after))))))
+
+(def %sql-group
+  (fn (_ ts)
+    (if (%sql-kw? ts "ALL") (pair (lit all) (rest ts))
+      (%sql-list %sql-expr ts))))
+
+(def %sql-order (fn (_ ts) (%sql-list %sql-order-term ts)))
+
+; The clauses after the tables, each nil when absent, as
+; (WHERE ORDER LIMIT OFFSET GROUP HAVING)
 (def %sql-tail
   (fn (_ ts)
-    (let ((where (if (%sql-kw? ts "WHERE") (%sql-expr (rest ts)) (pair () ts))))
-      (let ((by (%sql-after (rest where) (list "ORDER" "BY"))))
-        (let ((order (if (null? by) (pair () (rest where))
-                       (%sql-list %sql-order-term (first by)))))
-          (let ((limit (if (%sql-kw? (rest order) "LIMIT")
-                         (%sql-expr (rest (rest order)))
-                         (pair () (rest order)))))
-            (let ((offset (if (%sql-kw? (rest limit) "OFFSET")
-                            (%sql-expr (rest (rest limit)))
-                            (pair () (rest limit)))))
-              (%sql-refuse-unread (rest offset))
-              (pair (list (first where) (first order) (first limit) (first offset))
-                    (rest offset)))))))))
+    (let ((where (%sql-clause (list "WHERE") %sql-expr ts)))
+      (let ((group (%sql-clause (list "GROUP" "BY") %sql-group (rest where))))
+        (let ((having (%sql-clause (list "HAVING") %sql-expr (rest group))))
+          (let ((order (%sql-clause (list "ORDER" "BY") %sql-order (rest having))))
+            (let ((limit (%sql-clause (list "LIMIT") %sql-expr (rest order))))
+              (let ((offset (%sql-clause (list "OFFSET") %sql-expr (rest limit))))
+                (%sql-refuse-unread (rest offset))
+                (pair (list (first where) (first order) (first limit)
+                            (first offset) (first group) (first having))
+                      (rest offset))))))))))
 
+; The items after SELECT and whether DISTINCT came first:
+; ((ITEMS . DISTINCT) . tokens-left)
+(def %sql-items
+  (fn (_ ts)
+    (let ((distinct (%sql-kw? ts "DISTINCT")))
+      (let ((is (%sql-list %sql-item (if distinct (rest ts) ts))))
+        (pair (pair (first is) distinct) (rest is))))))
+
+; ITEMS is %sql-items' (ITEMS . DISTINCT), TAIL %sql-tail's list
 (def %sql-select-node
   (fn (_ items from tail)
-    (pair (lit select) (pair items (pair from tail)))))
+    (pair (lit select)
+      (pair (first items)
+        (pair from (List append tail (list (rest items))))))))
 
-; SELECT items [FROM table] and the clauses after
+; SELECT items [FROM tables] and the clauses after
 (def %sql-select
   (fn (_ ts)
     (when (or (null? ts) (%sql-op? ts ";"))
       (error "Parser Error: SELECT clause without selection list"))
     (%sql-refuse-unread ts)
-    (let ((is (%sql-list %sql-item ts)))
+    (let ((is (%sql-items ts)))
       (let ((from (if (%sql-kw? (rest is) "FROM") (%sql-from (rest (rest is)))
                     (pair () (rest is)))))
         (let ((tail (%sql-tail (rest from))))
           (pair (%sql-select-node (first is) (first from) (first tail))
                 (rest tail)))))))
 
-; FROM table [SELECT items] and the clauses after: DuckDB's order
+; FROM tables [SELECT items] and the clauses after: DuckDB's order
 (def %sql-from-first
   (fn (_ ts)
     (let ((from (%sql-from ts)))
       (let ((is (if (%sql-kw? (rest from) "SELECT")
-                  (%sql-list %sql-item (rest (rest from)))
-                  (pair (list (list (list (lit star) ()) ())) (rest from)))))
+                  (%sql-items (rest (rest from)))
+                  (pair (pair (list (list (list (lit star) ()) ())) #f)
+                        (rest from)))))
         (let ((tail (%sql-tail (rest is))))
           (pair (%sql-select-node (first is) (first from) (first tail))
                 (rest tail)))))))

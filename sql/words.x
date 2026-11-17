@@ -16,7 +16,8 @@
   (list "SELECT" "FROM" "WHERE" "AS" "AND" "OR" "NOT" "IS" "NULL" "TRUE"
         "FALSE" "GROUP" "ORDER" "HAVING" "LIMIT" "OFFSET" "UNION" "EXCEPT"
         "INTERSECT" "ON" "USING" "JOIN" "CASE" "WHEN" "THEN" "ELSE" "END"
-        "IN" "DISTINCT" "ALL" "CREATE" "TABLE" "INTO" "WITH"))
+        "IN" "DISTINCT" "ALL" "CREATE" "TABLE" "INTO" "WITH" "INNER" "LEFT"
+        "RIGHT" "FULL" "CROSS" "OUTER" "NATURAL"))
 
 ; Longest first where one operator starts another: the Lexer's table takes
 ; the longest literal present.
@@ -49,4 +50,8 @@
         (list "BOOLEAN" (lit boolean)) (list "BOOL" (lit boolean))
         (list "LOGICAL" (lit boolean))))
 
-(provide sql/words sql-reserved sql-ops sql-binary-ops sql-type-words)
+; The functions that answer one value for a group of rows
+(def sql-aggregates (list "count" "sum" "min" "max"))
+
+(provide sql/words
+  sql-reserved sql-ops sql-binary-ops sql-type-words sql-aggregates)
