@@ -22,7 +22,8 @@
 (import sql/words sql-lower sql-same-name?)
 (import sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
-  sql-column-node sql-column-index
+  sql-column-hidden? sql-column-hide sql-column-node sql-column-index
+  sql-common-type
   sql-aggregated? sql-aggregate-call? sql-cast
   sql-truth sql-order sql-null? sql-value-text)
 
@@ -112,16 +113,71 @@
               (rest right)))
           ())))))
 
+; The columns of COLUMNS a name with no qualifier finds
+(def %sql-named
+  (fn (_ name columns)
+    (List filter
+      (fn (_ c) (and (sql-same-name? (List second c) name) (not (sql-column-hidden? c))))
+      columns)))
+
+; The one column NAME names on a SIDE of a join, left or right
+(def %sql-using-column
+  (fn (_ name columns side)
+    (let ((found (%sql-named name columns)))
+      (when (or (null? found) (not (null? (rest found))))
+        (error (Str8 append "Binder Error: Column \"" name "\" does not exist on "
+                            side " side of join!")))
+      (first found))))
+
+; The names a NATURAL join joins on: those both sides have, in the left's
+; order
+(def %sql-shared-names
+  (fn (_ left right)
+    (List map (fn (_ c) (List second c))
+      (List filter
+        (fn (_ c) (and (not (sql-column-hidden? c))
+                       (not (null? (%sql-named (List second c) right)))))
+        left))))
+
+; The condition a USING stands for: each name's column on the left equal
+; to its column on the right
+(def %sql-using-condition
+  (fn (_ names left right)
+    (let ((tests (List map
+                   (fn (_ name)
+                     (list (lit bin) (lit eq)
+                           (sql-column-node name (first (%sql-using-column name left "left")))
+                           (sql-column-node name (first (%sql-using-column name right "right")))))
+                   names)))
+      (List fold (fn (_ all test) (list (lit and) all test)) (first tests) (rest tests)))))
+
+; LEFT joined to RIGHT.  With USING, a list of names or the name natural,
+; the rows kept are those equal in each name's column, and the right's
+; column of each name is hidden: the left's stands for both.
 (def %sql-join
-  (fn (_ left right kind on)
+  (fn (_ left right kind on using)
     (when (sql-aggregated? on)
       (error "Binder Error: JOIN clause cannot contain aggregates!"))
-    (let ((columns (List append (first left) (first right))))
-      (pair columns
-        (%sql-join-rows left right kind
-          (fn (_ row)
-            (if (null? on) #t
-              (eq? (sql-truth (sql-eval on (sql-scope columns row () ()))) #t))))))))
+    (let ((names (if (eq? using (lit natural)) (%sql-shared-names (first left) (first right))
+                   using)))
+      (when (and (not (null? using)) (List includes? kind (list (lit right) (lit full))))
+        (error "Not implemented Error: USING or NATURAL with a RIGHT or FULL JOIN"))
+      (when (and (eq? using (lit natural)) (null? names))
+        (error "Binder Error: No columns found to join on in NATURAL JOIN."))
+      (let ((test (if (null? names) on (%sql-using-condition names (first left) (first right))))
+            (columns (List append (first left)
+                       (List map
+                         (fn (_ c)
+                           (if (List any? (fn (_ n) (sql-same-name? n (List second c))) names)
+                             (sql-column-hide c)
+                             c))
+                         (first right)))))
+        (let ((visible (List append (first left) (first right))))
+          (pair columns
+            (%sql-join-rows left right kind
+              (fn (_ row)
+                (if (null? test) #t
+                  (eq? (sql-truth (sql-eval test (sql-scope visible row () ()))) #t))))))))))
 
 ; Every table of a FROM, each joined to what is before it
 (def %sql-from
@@ -129,14 +185,14 @@
     (List fold
       (fn (_ left join)
         (%sql-join left (%sql-source (List second join) (List third join))
-                   (first join) (List ref 3 join)))
+                   (first join) (List ref 3 join) (List ref 4 join)))
       (%sql-source (first (first from)) (List second (first from)))
       (rest from))))
 
 ; The items a star stands for: every column, or every column of QUALIFIER
 (def %sql-star
   (fn (_ qualifier columns)
-    (let ((chosen (if (null? qualifier) columns
+    (let ((chosen (if (null? qualifier) (List reject sql-column-hidden? columns)
                     (List filter (fn (_ c) (sql-same-name? (first c) qualifier))
                                  columns))))
       (match
@@ -478,8 +534,78 @@
 ; A select statement's result: a SELECT's, or that of the SELECT a WITH
 ; ends in, its tables made first, each one there for the next.  A name a
 ; WITH gives hides a table of that name until the statement is done.
+; --- set operations ----------------------------------------------------------
+
+; How many times each row of ROWS comes, by its key
+(def %sql-row-counts
+  (fn (_ rows)
+    (let ((counts (Dict make)))
+      (List for-each
+        (fn (_ row)
+          (let ((k (%sql-values-key row)))
+            (counts set! k (+ 1 (counts get-or 0 k)))))
+        rows)
+      counts)))
+
+(def %sql-distinct-rows
+  (fn (_ rows) (List map first (%sql-partition rows %sql-values-key))))
+
+; The rows of LEFT that COUNTS, of the right's rows, has a count left
+; for, or has none for when WANTED is not.  With ALL each row of the right
+; answers for one of the left; without, a row is kept once.
+(def %sql-matching
+  (fn (_ left counts wanted all)
+    (if all
+      (List filter
+        (fn (_ row)
+          (let ((k (%sql-values-key row)))
+            (let ((n (counts get-or 0 k)))
+              (when (> n 0) (counts set! k (- n 1)))
+              (if wanted (> n 0) (= n 0)))))
+        left)
+      (List filter
+        (fn (_ row) (if wanted (counts has? (%sql-values-key row))
+                      (not (counts has? (%sql-values-key row)))))
+        (%sql-distinct-rows left)))))
+
+; A set operation is a static method named for it, of the two sides' rows
+; and whether rows that repeat are kept
+(def-class SqlSet ()
+  (static
+    (method union (self left right all)
+      (if all (List append left right) (%sql-distinct-rows (List append left right))))
+    (method intersect (self left right all)
+      (%sql-matching left (%sql-row-counts right) #t all))
+    (method except (self left right all)
+      (%sql-matching left (%sql-row-counts right) #f all))))
+
+; The type a column of both sides goes into: text when either is, as
+; DuckDB has it, else the type the two share
+(def %sql-set-type
+  (fn (_ a b)
+    (if (or (eq? a (lit varchar)) (eq? b (lit varchar))) (lit varchar)
+      (sql-common-type (list a b)))))
+
+; A set operation's result: the left's names, each column in the type its
+; two sides go into
+(def %sql-set-result
+  (fn (_ stmt outer)
+    (let ((left (%sql-query-result (List ref 3 stmt) outer))
+          (right (%sql-query-result (List ref 4 stmt) outer)))
+      (unless (= (List length (first left)) (List length (first right)))
+        (error "Binder Error: Set operations can only apply to expressions with the same number of result columns"))
+      (let ((types (List map %sql-set-type (List second left) (List second right))))
+        (let ((as-types (fn (_ result)
+                          (List map
+                            (fn (_ row) (List map (fn (_ v t) (pair t (sql-cast v t))) row types))
+                            (List third result)))))
+          (list (first left) types
+                ((class-static-ref SqlSet (List second stmt)) SqlSet
+                 (as-types left) (as-types right) (List third stmt))))))))
+
 (def %sql-query-result
   (fn (_ stmt outer)
+    (if (eq? (first stmt) (lit set)) (%sql-set-result stmt outer)
     (if (eq? (first stmt) (lit with))
       (let ((names (List map (fn (_ t) (%sql-key (first t))) (List second stmt))))
         (let ((hidden (List map (fn (_ name) (%sql-withs get name)) names)))
@@ -493,7 +619,7 @@
                 (if (null? was) (%sql-withs del! name) (%sql-withs set! name was)))
               names hidden)
             result)))
-      (%sql-select-result stmt outer))))
+      (%sql-select-result stmt outer)))))
 
 (sql-select-runner! %sql-query-result)
 
@@ -514,6 +640,7 @@
   (static
     (method select (self stmt) (%sql-query-result stmt ()))
     (method with (self stmt) (%sql-query-result stmt ()))
+    (method set (self stmt) (%sql-query-result stmt ()))
     ; Every SET is worked out from the row as it was
     (method update (self stmt)
       (let ((table (%sql-table (List second stmt))) (where (List ref 3 stmt)))
@@ -551,8 +678,8 @@
                 (List third table)))))))
     ; A table made AS a select statement has its columns and its rows
     (method create (self stmt)
-      (let ((name (List second stmt)) (as (eq? (first (List third stmt)) (lit select))))
-        (let ((result (if (or as (eq? (first (List third stmt)) (lit with)))
+      (let ((name (List second stmt)))
+        (let ((result (if (symbol? (first (List third stmt)))
                         (%sql-query-result (List third stmt) ())
                         ())))
           (let ((columns (if (null? result) (List third stmt)

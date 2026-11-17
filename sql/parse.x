@@ -16,9 +16,10 @@
 ;       ITEMS   a list of (EXPR ALIAS), ALIAS nil or text; EXPR may be
 ;               (star QUALIFIER), every column, or every column of one table
 ;       FROM    nil, or a list: (TABLE ALIAS) first, then a
-;               (KIND TABLE ALIAS ON) for each table joined to what is
-;               before it, KIND inner, left, right, full or cross and ON
-;               nil or an expression
+;               (KIND TABLE ALIAS ON USING) for each table joined to what
+;               is before it, KIND inner, left, right, full or cross, ON
+;               nil or an expression, and USING nil, the columns of a
+;               USING, or the name natural
 ;       WHERE, HAVING   nil or an expression
 ;       ORDER   a list of (EXPR DESCENDING NULLS), NULLS nil, first or last
 ;       LIMIT, OFFSET   nil or an expression
@@ -33,6 +34,12 @@
 ;   (delete TABLE WHERE)
 ;   (with TABLES SELECT)        TABLES a list of (NAME SELECT): each a table
 ;                               for the ones after it and for SELECT
+;   (set OP ALL LEFT RIGHT)     OP union, intersect or except, of two select
+;                               statements; ALL whether rows that repeat
+;                               are kept.  An ORDER BY, LIMIT or OFFSET
+;                               after the last statement is the whole's:
+;                               the set is then the one table of a SELECT *
+;                               that has them.
 ;   (drop TABLE IF-EXISTS)
 ;
 ; A table of a FROM is a name, or a select statement in parentheses.
@@ -245,72 +252,117 @@
                     shown)
               (rest args))))))
 
+; TS after an opening parenthesis: an expression and the parenthesis that
+; closes it
+(def %sql-closed-expr
+  (fn (_ ts)
+    (let ((e (%sql-expr ts)))
+      (if (%sql-op? (rest e) ")") (pair (first e) (rest (rest e)))
+        (%sql-near (rest e))))))
+
+; A type before a string, DATE '2026-11-17': a cast of the string
+(def %sql-typed-string
+  (fn (_ ts)
+    (let ((type (%sql-type (list (first ts)))))
+      (pair (pair (lit cast) (pair (list (lit str) (List second (List second ts)))
+                                   (first type)))
+            (rest (rest ts))))))
+
+; INTERVAL and a count, TS after the word: the unit follows
+(def %sql-interval
+  (fn (_ ts)
+    (let ((e (%sql-postfix ts)))
+      (if (%sql-name? (rest e))
+        (pair (list (lit to-interval) (first e) (List second (first (rest e))))
+              (rest (rest e)))
+        (%sql-near (rest e))))))
+
+; EXTRACT(part FROM value), TS at the part: date_part of the part's name
+; in upper case, as DuckDB heads it
+(def %sql-extract
+  (fn (_ ts)
+    (let ((e (%sql-closed-expr (rest (rest ts)))))
+      (pair (list (lit call) "date_part"
+                  (list (list (lit str) (sql-upper (List second (first ts)))) (first e))
+                  #f)
+            (rest e)))))
+
+; CAST(value AS type), TS after the parenthesis
+(def %sql-cast
+  (fn (_ ts)
+    (let ((e (%sql-expr ts)))
+      (if (%sql-kw? (rest e) "AS")
+        (let ((type (%sql-type (rest (rest e)))))
+          (if (%sql-op? (rest type) ")")
+            (pair (pair (lit cast) (pair (first e) (first type))) (rest (rest type)))
+            (%sql-near (rest type))))
+        (%sql-near (rest e))))))
+
+; A select statement in parentheses, TS after the parenthesis, under HEAD:
+; subquery or exists
+(def %sql-subquery
+  (fn (_ head ts)
+    (let ((q (%sql-closed-query ts)))
+      (pair (list head (first q)) (rest q)))))
+
+; A name: a column, with its table before a point when it has one
+(def %sql-column-name
+  (fn (_ ts)
+    (if (and (%sql-op? (rest ts) ".") (%sql-name? (rest (rest ts))))
+      (pair (%sql-col (List second (List third ts)) (List second (first ts)))
+            (rest (rest (rest ts))))
+      (pair (%sql-col (List second (first ts)) ()) (rest ts)))))
+
+; A form a word opens, when TS starts with one; nil when it does not
+(def %sql-word-form
+  (fn (_ ts)
+    (let ((after (rest ts)) (text (List second (first ts))))
+      (match
+        ((%sql-kw? ts "CASE") (%sql-case after))
+        ((not (eq? (first (first ts)) (lit id))) ())
+        ((and (not (null? after)) (eq? (first (first after)) (lit str)) (%sql-type-word? text))
+          (%sql-typed-string ts))
+        ((and (%sql-word? ts "INTERVAL") (not (null? after))) (%sql-interval after))
+        ((and (%sql-word? ts "EXTRACT") (%sql-op? after "(")
+              (%sql-name? (rest after)) (%sql-kw? (List drop 3 ts) "FROM"))
+          (%sql-extract (rest after)))
+        ((and (%sql-word? ts "CAST") (%sql-op? after "(")) (%sql-cast (rest after)))
+        ((and (%sql-word? ts "EXISTS") (%sql-op? after "(") (%sql-query? (rest after)))
+          (%sql-subquery (lit exists) (rest after)))
+        ((and (not (%sql-op? after "(")) (List includes? (sql-lower text) %sql-bare-calls))
+          (pair (list (lit call) (sql-lower text) () #f) after))
+        (#t ())))))
+
+; A constant, when TS starts with one; nil when it does not
+(def %sql-constant
+  (fn (_ ts)
+    (let ((tok (first ts)))
+      (match
+        ((eq? (first tok) (lit num))
+          (pair (%sql-number (List second tok) (List third tok)) (rest ts)))
+        ((eq? (first tok) (lit str)) (pair (list (lit str) (List second tok)) (rest ts)))
+        ((%sql-kw? ts "NULL") (pair (list (lit null)) (rest ts)))
+        ((%sql-kw? ts "TRUE") (pair (list (lit bool) #t) (rest ts)))
+        ((%sql-kw? ts "FALSE") (pair (list (lit bool) #f) (rest ts)))
+        (#t ())))))
+
+; What an expression is made of: a constant, a form a word opens, what is
+; in parentheses, a call, or a column
 (def %sql-primary
   (fn (_ ts)
-    (if (null? ts) (%sql-near ts)
-      (let ((tok (first ts)))
-        (let ((tag (first tok)) (text (List second tok)))
+    (when (null? ts) (%sql-near ts))
+    (let ((constant (%sql-constant ts)))
+      (if (not (null? constant)) constant
+        (let ((form (%sql-word-form ts)))
           (match
-            ((eq? tag (lit num)) (pair (%sql-number text (List third tok)) (rest ts)))
-            ((%sql-kw? ts "CASE") (%sql-case (rest ts)))
-            ((and (eq? tag (lit id)) (not (null? (rest ts)))
-                  (eq? (first (List second ts)) (lit str)) (%sql-type-word? text))
-              (let ((type (%sql-type (list tok))))
-                (pair (pair (lit cast) (pair (list (lit str) (List second (List second ts)))
-                                             (first type)))
-                      (rest (rest ts)))))
-            ((and (%sql-word? ts "INTERVAL") (not (null? (rest ts))))
-              (let ((e (%sql-postfix (rest ts))))
-                (if (%sql-name? (rest e))
-                  (pair (list (lit to-interval) (first e) (List second (first (rest e))))
-                        (rest (rest e)))
-                  (%sql-near (rest e)))))
-            ((and (%sql-word? ts "EXTRACT") (%sql-op? (rest ts) "(")
-                  (%sql-name? (rest (rest ts))) (%sql-kw? (List drop 3 ts) "FROM"))
-              (let ((e (%sql-expr (List drop 4 ts))))
-                (if (%sql-op? (rest e) ")")
-                  (pair (list (lit call) "date_part"
-                              (list (list (lit str) (sql-upper (List second (List third ts))))
-                                    (first e))
-                              #f)
-                        (rest (rest e)))
-                  (%sql-near (rest e)))))
-            ((and (eq? tag (lit id)) (not (%sql-op? (rest ts) "("))
-                  (List includes? (sql-lower text) %sql-bare-calls))
-              (pair (list (lit call) (sql-lower text) () #f) (rest ts)))
-            ((and (%sql-word? ts "CAST") (%sql-op? (rest ts) "("))
-              (let ((e (%sql-expr (rest (rest ts)))))
-                (if (%sql-kw? (rest e) "AS")
-                  (let ((type (%sql-type (rest (rest e)))))
-                    (if (%sql-op? (rest type) ")")
-                      (pair (pair (lit cast) (pair (first e) (first type)))
-                            (rest (rest type)))
-                      (%sql-near (rest type))))
-                  (%sql-near (rest e)))))
-            ((eq? tag (lit str)) (pair (list (lit str) text) (rest ts)))
-            ((%sql-kw? ts "NULL") (pair (list (lit null)) (rest ts)))
-            ((%sql-kw? ts "TRUE") (pair (list (lit bool) #t) (rest ts)))
-            ((%sql-kw? ts "FALSE") (pair (list (lit bool) #f) (rest ts)))
+            ((not (null? form)) form)
             ((and (%sql-op? ts "(") (%sql-query? (rest ts)))
-              (let ((q (%sql-closed-query (rest ts))))
-                (pair (list (lit subquery) (first q)) (rest q))))
-            ((and (%sql-word? ts "EXISTS") (%sql-op? (rest ts) "(")
-                  (%sql-query? (rest (rest ts))))
-              (let ((q (%sql-closed-query (rest (rest ts)))))
-                (pair (list (lit exists) (first q)) (rest q))))
-            ((%sql-op? ts "(")
-              (let ((e (%sql-expr (rest ts))))
-                (if (%sql-op? (rest e) ")")
-                  (pair (first e) (rest (rest e)))
-                  (%sql-near (rest e)))))
-            ((and (or (eq? tag (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
+              (%sql-subquery (lit subquery) (rest ts)))
+            ((%sql-op? ts "(") (%sql-closed-expr (rest ts)))
+            ((and (or (eq? (first (first ts)) (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
                   (%sql-op? (rest ts) "("))
-              (%sql-call text (rest (rest ts))))
-            ((%sql-name? ts)
-              (if (and (%sql-op? (rest ts) ".") (%sql-name? (rest (rest ts))))
-                (pair (%sql-col (List second (List third ts)) text)
-                      (rest (rest (rest ts))))
-                (pair (%sql-col text ()) (rest ts))))
+              (%sql-call (List second (first ts)) (rest (rest ts))))
+            ((%sql-name? ts) (%sql-column-name ts))
             (#t (%sql-near ts))))))))
 
 ; A call's arguments, TS after its opening parenthesis: none, a star, or
@@ -488,8 +540,7 @@
         (#t (pair (list (first e) ()) (rest e)))))))
 
 ; The clauses a SELECT takes that are not read yet
-(def %sql-unread
-  (list "UNION" "EXCEPT" "INTERSECT" "USING" "NATURAL"))
+(def %sql-unread ())
 
 (def %sql-refuse-unread
   (fn (_ ts)
@@ -555,29 +606,48 @@
           ((null? row) ())
           (#t (%sql-near after)))))))
 
-; The tables joined to the first, TS after it: each after a comma or a JOIN
+; What says which rows of a join are kept, TS after the table joined: ON
+; and a condition, or USING and columns in parentheses, as
+; ((ON USING) . tokens-left); both nil when TS starts with neither
+(def %sql-join-test
+  (fn (_ ts)
+    (match
+      ((%sql-kw? ts "ON")
+        (let ((on (%sql-expr (rest ts))))
+          (pair (list (first on) ()) (rest on))))
+      ((%sql-kw? ts "USING")
+        (let ((names (%sql-parenthesized %sql-name-read (rest ts))))
+          (pair (list () (first names)) (rest names))))
+      (#t (pair (list () ()) ts)))))
+
+; The tables joined to the first, TS after it: each after a comma or a
+; JOIN.  NATURAL before a JOIN joins on the columns the two sides share,
+; and takes no ON or USING; a CROSS JOIN takes none either; any other
+; takes one.
 (def %sql-joins
   (fn (self ts)
     (if (%sql-op? ts ",")
       (let ((source (%sql-source (rest ts))))
         (let ((more (self (rest source))))
-          (pair (pair (pair (lit cross) (List append (first source) (list ())))
+          (pair (pair (pair (lit cross) (List append (first source) (list () ())))
                       (first more))
                 (rest more))))
-      (let ((kind (%sql-join-kind ts)))
-        (if (null? kind) (pair () ts)
-          (let ((source (%sql-source (rest kind))))
-            (%sql-refuse-unread (rest source))
-            (let ((on (if (%sql-kw? (rest source) "ON")
-                        (%sql-expr (rest (rest source)))
-                        (pair () (rest source)))))
-              (when (and (null? (first on)) (not (eq? (first kind) (lit cross))))
-                (%sql-near (rest on)))
-              (let ((more (self (rest on))))
-                (pair (pair (pair (first kind)
-                                  (List append (first source) (list (first on))))
-                            (first more))
-                      (rest more))))))))))
+      (let ((natural (%sql-kw? ts "NATURAL")))
+        (let ((kind (%sql-join-kind (if natural (rest ts) ts))))
+          (match
+            ((and (null? kind) natural) (%sql-near (rest ts)))
+            ((null? kind) (pair () ts))
+            (#t
+              (let ((source (%sql-source (rest kind))))
+                (let ((test (if natural (pair (list () (lit natural)) (rest source))
+                              (%sql-join-test (rest source)))))
+                  (when (and (null? (first (first test))) (null? (List second (first test)))
+                             (not (eq? (first kind) (lit cross))))
+                    (%sql-near (rest test)))
+                  (let ((more (self (rest test))))
+                    (pair (pair (pair (first kind) (List append (first source) (first test)))
+                                (first more))
+                          (rest more))))))))))))
 
 ; What follows FROM: the first table, then the tables joined to it
 (def %sql-from
@@ -747,14 +817,72 @@
                 (rest at))))
       (%sql-near ts))))
 
-; A select statement in either order, or a WITH before one
-(def %sql-query
+; One select statement in either order, or a WITH before one
+(def %sql-simple-query
   (fn (_ ts)
     (match
       ((%sql-kw? ts "SELECT") (%sql-select (rest ts)))
       ((%sql-kw? ts "FROM") (%sql-from-first (rest ts)))
       ((%sql-kw? ts "WITH") (%sql-with (rest ts)))
       (#t (%sql-near ts)))))
+
+; A select statement without its ORDER BY, LIMIT and OFFSET, and those:
+; (STATEMENT ORDER LIMIT OFFSET).  Only a SELECT has them to give.
+(def %sql-without-tail
+  (fn (_ stmt)
+    (if (eq? (first stmt) (lit select))
+      (list (list (lit select) (List second stmt) (List third stmt) (List ref 3 stmt)
+                  () () () (List ref 7 stmt) (List ref 8 stmt) (List ref 9 stmt))
+            (List ref 4 stmt) (List ref 5 stmt) (List ref 6 stmt))
+      (list stmt () () ()))))
+
+; LEFT and RIGHT under a set operation.  What ORDER BY, LIMIT and OFFSET
+; RIGHT ends with are the whole's: the set is then the one table of a
+; SELECT * that has them.
+(def %sql-set-node
+  (fn (_ op all left right)
+    (let ((tail (%sql-without-tail right)))
+      (let ((node (list (lit set) op all left (first tail))))
+        (if (and (null? (List second tail)) (null? (List third tail)) (null? (List ref 3 tail)))
+          node
+          (list (lit select) (list (list (list (lit star) ()) ()))
+                (list (list node ()))
+                () (List second tail) (List third tail) (List ref 3 tail) () () #f))))))
+
+; Whether ALL follows a set operation's word, and the tokens after it or
+; after DISTINCT: (ALL . tokens-left)
+(def %sql-set-all
+  (fn (_ ts)
+    (match
+      ((%sql-kw? ts "ALL") (pair #t (rest ts)))
+      ((%sql-kw? ts "DISTINCT") (pair #f (rest ts)))
+      (#t (pair #f ts)))))
+
+; Statements NEXT reads, joined left to right by the set operations WORDS
+; name, each (WORD NAME)
+(def %sql-set-chain
+  (fn (_ next words ts)
+    (let ((l (next ts)))
+      ((fn (self left ts)
+         (let ((word (List find (fn (_ w) (%sql-kw? ts (first w))) words)))
+           (if (null? word) (pair left ts)
+             (let ((all (%sql-set-all (rest ts))))
+               (let ((r (next (rest all))))
+                 (self (%sql-set-node (List second word) (first all) left (first r))
+                       (rest r)))))))
+       (first l) (rest l)))))
+
+; INTERSECT joins tighter than UNION and EXCEPT
+(def %sql-intersections
+  (fn (_ ts)
+    (%sql-set-chain %sql-simple-query (list (list "INTERSECT" (lit intersect))) ts)))
+
+; A select statement, or several under set operations
+(def %sql-query
+  (fn (_ ts)
+    (%sql-set-chain %sql-intersections
+      (list (list "UNION" (lit union)) (list "EXCEPT" (lit except)))
+      ts)))
 
 ; One table of a WITH: name AS (select statement)
 (def %sql-with-table

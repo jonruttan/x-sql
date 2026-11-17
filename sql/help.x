@@ -33,11 +33,23 @@
     (list "join" "More than one table in a FROM."
       (list "table [INNER] JOIN table ON condition"
             "table LEFT | RIGHT | FULL [OUTER] JOIN table ON condition"
+            "table [LEFT] JOIN table USING (column, ...)   the columns shown once"
+            "table NATURAL [LEFT] JOIN table              on every column both have"
             "table CROSS JOIN table"
             "table, table"
             "A column two tables have is written table.column.")
       (list "SELECT t.a, c FROM t JOIN u ON t.a = u.a;"
             "SELECT * FROM t LEFT JOIN u ON t.a = u.a WHERE u.a IS NULL;"))
+    (list "union" "Two select statements as one."
+      (list "SELECT ... UNION [ALL] SELECT ...       the rows of both"
+            "SELECT ... INTERSECT [ALL] SELECT ...   the rows both have"
+            "SELECT ... EXCEPT [ALL] SELECT ...      the first's rows the second has not"
+            "Without ALL a row is there once.  The names are the first"
+            "statement's, and each column takes a type both sides go into."
+            "INTERSECT joins tighter than UNION and EXCEPT.  An ORDER BY, LIMIT"
+            "or OFFSET after the last statement is the whole's.")
+      (list "SELECT a FROM t UNION SELECT a FROM u ORDER BY a LIMIT 10;"
+            "SELECT a FROM t EXCEPT SELECT a FROM u;"))
     (list "group" "A row for a group of rows."
       (list "GROUP BY expression | alias | place in the list, ..."
             "GROUP BY ALL    every item that holds no aggregate"
