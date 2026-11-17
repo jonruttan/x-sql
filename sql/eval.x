@@ -954,7 +954,7 @@
 (def sql-expr-name
   (fn (_ node) ((class-static-ref SqlName (first node)) SqlName node)))
 
-; A column of a scope is (QUALIFIER NAME TYPE LOW-QUALIFIER LOW-NAME), and
+; A column of a scope is (QUALIFIER NAME TYPE LOW-QUALIFIER LOW-NAME HIDDEN), and
 ; a col node (col NAME QUALIFIER LOW-NAME LOW-QUALIFIER): the names as
 ; written, for a heading or an error, and in lower case, folded once where
 ; the column and the node are made, so finding a column for a row
@@ -968,7 +968,18 @@
 ; A scope's column of a table under its qualifier
 (def sql-column
   (fn (_ qualifier name type)
-    (list qualifier name type (sql-lower qualifier) (sql-lower name))))
+    (list qualifier name type (sql-lower qualifier) (sql-lower name) #f)))
+
+; A column is hidden when a USING joined on it and the other side's column
+; of that name stands for both: a name with no qualifier does not find it,
+; and a star leaves it out.  Its qualified name still finds it.
+(def sql-column-hidden?
+  (fn (_ column) (first (rest (rest (rest (rest (rest column))))))))
+
+(def sql-column-hide
+  (fn (_ column)
+    (list (first column) (List second column) (List third column)
+          (%sql-fourth column) (%sql-fifth column) #t)))
 
 ; A col node for a name, QUALIFIER nil or a table's name
 (def sql-column-node
@@ -982,7 +993,8 @@
   (fn (self name qualifier columns i)
     (if (null? columns) ()
       (if (and (str=? (%sql-fifth (first columns)) name)
-               (or (null? qualifier) (str=? (%sql-fourth (first columns)) qualifier)))
+               (if (null? qualifier) (not (sql-column-hidden? (first columns)))
+                 (str=? (%sql-fourth (first columns)) qualifier)))
         (pair i (self name qualifier (rest columns) (+ i 1)))
         (self name qualifier (rest columns) (+ i 1))))))
 
@@ -1293,7 +1305,15 @@
 ; its items, its tables, and the clauses after
 (def %sql-select-text
   (fn (_ stmt)
-    (if (eq? (first stmt) (lit with)) (Str8 append "WITH ... " (%sql-select-text (List third stmt)))
+    (match
+      ((eq? (first stmt) (lit with))
+        (Str8 append "WITH ... " (%sql-select-text (List third stmt))))
+      ((eq? (first stmt) (lit set))
+        (Str8 append "(" (%sql-select-text (List ref 3 stmt)) ") "
+                     (Str8 upcase (Str8 str (List second stmt)))
+                     (if (List third stmt) " ALL (" " (")
+                     (%sql-select-text (List ref 4 stmt)) ")"))
+      (#t
       (let ((clause (fn (_ word e) (if (null? e) "" (Str8 append " " word " " (sql-expr-name e))))))
         (Str8 append "SELECT "
           (if (List ref 9 stmt) "DISTINCT " "")
@@ -1326,7 +1346,7 @@
               (Str8 join ", "
                 (List map (fn (_ term) (sql-expr-name (first term))) (List ref 4 stmt)))))
           (clause "LIMIT" (List ref 5 stmt))
-          (clause "OFFSET" (List ref 6 stmt)))))))
+          (clause "OFFSET" (List ref 6 stmt))))))))
 
 (def-class SqlName ()
   (static
@@ -1609,7 +1629,7 @@
 
 (provide sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
-  sql-column-node sql-column-index
+  sql-column-hidden? sql-column-hide sql-column-node sql-column-index
   sql-aggregated? sql-aggregate-call? sql-common-type sql-cast
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type?)

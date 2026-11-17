@@ -320,15 +320,3 @@ DuckDB names the last token it read, "u".
 ```output
 Parser Error: syntax error at end of input
 ```
-
-### USING is not built
-
-DuckDB joins on the column and shows it once.
-
-```x
-(sql "CREATE OR REPLACE TABLE t (a INTEGER, b VARCHAR); INSERT INTO t VALUES (1,'x'),(2,'x'),(3,'y'),(NULL,'y'),(NULL,NULL); CREATE OR REPLACE TABLE u (a INTEGER, c VARCHAR); INSERT INTO u VALUES (1,'one'),(3,'three'),(4,'four'); SELECT * FROM t JOIN u USING (a)")
-```
----
-```output
-Not implemented Error: USING
-```

@@ -61,8 +61,11 @@ What is built:
   `LIMIT` and `OFFSET`; and DuckDB's order, `FROM t` alone or
   `FROM t SELECT ...`.
 - **Joins.** `JOIN ... ON`, `LEFT`, `RIGHT` and `FULL [OUTER] JOIN`,
-  `CROSS JOIN`, and tables listed with commas; a table joined to itself
-  under two aliases.
+  `CROSS JOIN`, and tables listed with commas; `JOIN ... USING (...)` and
+  `NATURAL JOIN`, inner and left, the shared columns shown once; a table
+  joined to itself under two aliases.
+- **Set operations.** `UNION`, `INTERSECT` and `EXCEPT`, each with or
+  without `ALL`; a trailing `ORDER BY` and `LIMIT` are the whole's.
 - **Subqueries.** A select statement in parentheses for its one value,
   after `[NOT] IN`, after `[NOT] EXISTS`, and as a table of a `FROM`;
   `WITH name AS (...)`. A subquery reads the row it is answered for.
@@ -101,15 +104,15 @@ What is built:
 - **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
-Anything else is refused by name (`Not implemented Error: UNION`) and not
+Anything else is refused by name (`Not implemented Error: the type REAL`) and not
 answered differently.
 
 ## Planned
 
 In this order:
 
-1. `UNION`, `INTERSECT` and `EXCEPT`, `JOIN ... USING`, window
-   functions, and a WITH that reads itself.
+1. Window functions, a WITH that reads itself, and select statements
+   in parentheses as the sides of a set operation.
 2. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
    ZONE, and the functions that go with them.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
@@ -159,6 +162,8 @@ No script runs against Oracle's MySQL.
   ASCII letters only.
 - Groups come in the order their keys first appear; DuckDB promises no
   order.
+- `USING` and `NATURAL` are not built for RIGHT and FULL joins, where
+  DuckDB shows the shared column as whichever side has a row.
 - A join compares every pair of rows, and a subquery is run again for
   every row it is asked of, whether or not it reads that row.
 - A subquery's heading is the statement spelled back, as DuckDB's is, but

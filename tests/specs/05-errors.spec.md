@@ -92,16 +92,6 @@ Binder Error: Referenced column "a" was not found because the FROM clause is mis
 
 ## errors not built
 
-### UNION
-
-```x
-(sql "SELECT 1 UNION SELECT 2")
-```
----
-```output
-Not implemented Error: UNION
-```
-
 ### a comparison across types
 
 DuckDB reads the string as an integer and answers true.
