@@ -203,9 +203,35 @@
 
 ; --- a double as other numbers -----------------------------------------------
 
+; A number as the platform's float reader takes one: digits on both sides
+; of a point, and then an exponent.  A whole number is left as it is, for
+; the platform to read as an integer; a number written with an exponent
+; and no point, with nothing before its point or with nothing after it is
+; given what it lacks.  A plus before it goes.
+(def %sql-float-text
+  (fn (_ text)
+    (let ((body (if (Str8 starts? "+" text) (Str8 sub 1 (Str8 length text) text) text)))
+      (let ((at (if (null? (Str8 index-of "e" body)) (Str8 index-of "E" body)
+                  (Str8 index-of "e" body))))
+        (let ((mantissa (if (null? at) body (Str8 sub 0 at body)))
+              (exponent (if (null? at) ""
+                          (Str8 append "e" (Str8 sub (+ at 1) (Str8 length body) body)))))
+          (let ((negative (Str8 starts? "-" mantissa)))
+            (let ((digits (if negative (Str8 sub 1 (Str8 length mantissa) mantissa) mantissa)))
+              (let ((point (Str8 index-of "." digits)))
+                (if (and (null? point) (null? at)) body
+                  (Str8 append
+                    (if negative "-" "")
+                    (match
+                      ((null? point) (Str8 append digits ".0"))
+                      ((= point 0) (Str8 append "0" digits))
+                      (#t digits))
+                    (if (and (not (null? point)) (= point (- (Str8 length digits) 1))) "0" "")
+                    exponent))))))))))
+
 ; The double nearest an integer or a number written out in TEXT.  The
 ; platform's reader does the rounding.
-(def sql-double-of (fn (_ text) (Float from text)))
+(def sql-double-of (fn (_ text) (Float from (%sql-float-text text))))
 
 ; A finite double times 10^SCALE as an integer, a half rounded away from
 ; zero

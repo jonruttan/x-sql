@@ -81,6 +81,24 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -c`, unless 
 └──────────────────────────────────────────┘
 ```
 
+### a number with no digit before its point, or no point at all
+
+The platform's reader wants digits on both sides of a point before an
+exponent; the bundle writes what a number lacks before handing it over.
+
+```x
+(sql "SELECT 1e3, .5e1, 1E3, '1e3'::DOUBLE, '.5'::DOUBLE, '7'::DOUBLE, -1e-3")
+```
+---
+```output
+┌────────┬────────┬────────┬───────────────────────┬──────────────────────┬─────────────────────┬────────┐
+│  1e3   │  .5e1  │  1E3   │ CAST('1e3' AS DOUBLE) │ CAST('.5' AS DOUBLE) │ CAST('7' AS DOUBLE) │ -1e-3  │
+│ double │ double │ double │        double         │        double        │       double        │ double │
+├────────┼────────┼────────┼───────────────────────┼──────────────────────┼─────────────────────┼────────┤
+│ 1000.0 │    5.0 │ 1000.0 │                1000.0 │                  0.5 │                 7.0 │ -0.001 │
+└────────┴────────┴────────┴───────────────────────┴──────────────────────┴─────────────────────┴────────┘
+```
+
 ## doubles arithmetic
 
 ### / answers a DOUBLE whatever it divides
