@@ -59,7 +59,7 @@ sent 200000032c1a320fc6146cf1498e533518f46a9f768afe92573087f4bbe5d156c9dcfe76
 ready
 ```
 
-### a server that wants the whole password is refused: that goes only over TLS or under its RSA key
+### a server that wants the whole password is refused in the clear: that goes only over TLS
 
 ```x
 (guard (e (%seq (display e) (newline))) (my-start (canned-link "520000000a31312e342e322d4d6172696144420007000000010203040506070800fff72d0200ff811500000000000000000000090a0b0c0d0e0f10111213140063616368696e675f736861325f70617373776f726400020000020104") "me" "secret" ()))
@@ -67,7 +67,7 @@ ready
 ---
 ```output
 sent 5a00000105a20b00000000012d00000000000000000000000000000000000000000000006d650020746ebe205d56a0707acb3e796e834e0dd7b1d61743b26bd5202c7a623230c7c963616368696e675f736861325f70617373776f726400
-Connection Error: the server wants the whole password, which goes only over TLS or under its RSA key, and neither is built
+Connection Error: the server wants the whole password, which goes only over TLS
 ```
 
 ### a plugin that is not built is named
@@ -239,6 +239,6 @@ Connection Error: the server closed the connection
 ```
 ---
 ```output
-("db.example" 3306 () "mysql")
-("h" 3307 "shop" "mariadb")
+("db.example" 3306 () "mysql" "disable")
+("h" 3307 "shop" "mariadb" "disable")
 ```

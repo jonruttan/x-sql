@@ -102,8 +102,16 @@
             "the port 3306 and there is no database unless one is written."
             "Once connected a statement is the server's to read: its SQL, its"
             "types, its errors.  .tables, .schema and Tab's tables are still"
-            "the engine's here.  The connection is not encrypted.")
+            "the engine's here."
+            "?sslmode= after the URL says what to ask of TLS: prefer, TLS when"
+            "the server has it, which is what is asked when nothing is said;"
+            "require, TLS or no connection; verify-full, that with the"
+            "server's certificate checked for its name against Mozilla's"
+            "roots; disable, none.  Only verify-full knows who the server is."
+            "With MySQL and MariaDB nothing said is disable, and TLS is not"
+            "possible yet: their servers ask a client for a certificate.")
       (list ".connect postgres://me@localhost/mydb"
+            ".connect postgres://me@db.example/shop?sslmode=verify-full"
             "x -l sql -- mysql://me@localhost/mydb -c \"SELECT version()\""))
     (list "prompt" "The prompt's own commands, each on a line starting with a dot."
       (list ".help [topic]     this help, or one topic"

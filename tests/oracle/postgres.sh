@@ -14,8 +14,9 @@
 #
 # PG_BIN names the directory of initdb, pg_ctl and psql when they are not on
 # PATH.  The server listens on 127.0.0.1 only, on a port the kernel picked,
-# with no unix socket; its passwords are made here, at random, and go with
-# the directory.
+# with no unix socket and with TLS on, under a certificate it signs for
+# itself; its passwords are made here, at random, and go with the
+# directory.
 set -e
 
 BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -54,8 +55,13 @@ host all clear   127.0.0.1/32 password
 host all hashed  127.0.0.1/32 md5
 host all all     127.0.0.1/32 scram-sha-256
 HBA
+# A certificate the server signs for itself: enough for TLS, and what
+# verify-full must refuse
+openssl req -new -x509 -days 2 -nodes -subj "/CN=localhost" \
+	-keyout "$WORK/data/server.key" -out "$WORK/data/server.crt" >/dev/null 2>&1
+chmod 600 "$WORK/data/server.key"
 "$PG_BIN/pg_ctl" -D "$WORK/data" -l "$WORK/log" -w \
-	-o "-p $PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start >/dev/null
+	-o "-p $PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories='' -c ssl=on" start >/dev/null
 
 PGPASSWORD="$SECRET" "$PG_BIN/psql" -q -h 127.0.0.1 -p "$PORT" -U boss -d postgres <<SQL
 CREATE ROLE trusted LOGIN;
@@ -105,5 +111,14 @@ check "a notice"               'NOTICE:  table "nope" does not exist, skipping' 
 	-c "DROP TABLE IF EXISTS nope"
 check "many rows"              "│ 5000 │" "postgres://trusted@$AT" -c "SELECT g FROM generate_series(1, 5000) g"
 check "text of more than one byte a letter" "│ héllo │" "postgres://trusted@$AT" -c "SELECT 'héllo' AS s"
+
+SSL="SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
+check "TLS when the server has it" "│ t    │ TLSv1.3 │" "postgres://trusted@$AT" -c "$SSL"
+check "sslmode=require"        "│ t    │ TLSv1.3 │" "postgres://trusted@$AT?sslmode=require" -c "$SSL"
+check "sslmode=disable"        "│ f    │ NULL    │" "postgres://trusted@$AT?sslmode=disable" -c "$SSL"
+check "scram-sha-256 over TLS" "│ t    │ TLSv1.3 │" "postgres://boss:$SECRET@$AT?sslmode=require" -c "$SSL"
+check "many rows over TLS"     "│ 5000 │" "postgres://trusted@$AT?sslmode=require" -c "SELECT g FROM generate_series(1, 5000) g"
+check "verify-full refuses a certificate the server signed for itself" "Tls13: X509:" \
+	"postgres://trusted@$AT?sslmode=verify-full" -c "$SSL"
 
 exit "$FAILED"

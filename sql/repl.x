@@ -25,7 +25,9 @@
   sql-reserved sql-words sql-constants sql-type-words sql-aggregates)
 (import sql/lex sql-lex)
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
-(import sql/base sql-run sql-error-text sql-connect! sql-disconnect! sql-connection)
+(import sql/base
+  sql-run sql-error-text sql-connect! sql-disconnect! sql-connection
+  sql-connection-secure?)
 (import sql/exec sql-table-names sql-table-columns)
 (import sql/eval sql-type-name)
 (import sql/help sql-help-topics sql-help-topic sql-help-show sql-help-index)
@@ -268,7 +270,8 @@
     (method quit (self rest-of-line) (Sys exit 0))
     (method exit (self rest-of-line) (Sys exit 0))
     (method connect (self rest-of-line)
-      (display (Str8 append "connected to " (sql-connect! rest-of-line)))
+      (display (Str8 append "connected to " (sql-connect! rest-of-line)
+                            (if (sql-connection-secure?) ", over TLS" ", not encrypted")))
       (newline)
       (%sql-prompt!))
     (method disconnect (self rest-of-line)

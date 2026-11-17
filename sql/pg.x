@@ -9,6 +9,7 @@
 ; Protocol 3.0 (PostgreSQL's "Frontend/Backend Protocol"): the startup
 ; message, authentication in the clear, by MD5 and by SCRAM-SHA-256
 ; (RFC 5802, RFC 7677), and the simple query, whose results come as text.
+; TLS is asked for ahead of the startup message, with an SSLRequest.
 ; It speaks over a SqlLink (sql/link).  A message is a type byte, a
 ; four-byte length that counts itself, and a body.
 ;
@@ -298,13 +299,41 @@
           (#t (error (Str8 str "Connection Error: the server asks for an authentication that is not built, "
                                code))))))))
 
-; Protocol 3.0, as the startup message names it
+; Protocol 3.0, as the startup message names it, and the number an
+; SSLRequest carries in a protocol version's place
 (def %pg-protocol 196608)
+(def %pg-ssl-request 80877103)
 
-; A session on LINK: the startup message, authentication, and the
-; server's messages up to its first ReadyForQuery.  Answers LINK.
+; The server's one-byte answers to an SSLRequest: S, it will; N, it will
+; not
+(def %pg-ssl-yes 83)
+(def %pg-ssl-no 78)
+
+; TLS on LINK as MODE asks, for a server named HOST: "disable" leaves the
+; link as it is; "prefer" takes TLS when the server has it; "require"
+; refuses a server without it; "verify-full" also checks the server's
+; certificate for HOST.
+(def %pg-secure
+  (fn (_ link mode host)
+    (unless (str=? mode "disable")
+      (let ((w (Bytes writer)))
+        (Bytes put-u32 w 8)
+        (Bytes put-u32 w %pg-ssl-request)
+        ((link send) (Bytes written w))
+        (let ((answer (Bytes ref (link take 1) 0)))
+          (match
+            ((= answer %pg-ssl-yes) (link secure! host (str=? mode "verify-full")))
+            ((and (= answer %pg-ssl-no) (str=? mode "prefer")) ())
+            ((= answer %pg-ssl-no)
+              (error "Connection Error: the server does not take TLS, and sslmode asks for it"))
+            (#t (error "Protocol Error: the server's answer to an SSLRequest is not one"))))))))
+
+; A session on LINK: TLS when TLS, a list of a mode and the server's name,
+; asks for it; the startup message; authentication; and the server's
+; messages up to its first ReadyForQuery.  Answers LINK.
 (def pg-start
-  (fn (_ link user password database)
+  (fn (_ link user password database . tls)
+    (unless (null? tls) (%pg-secure link (first tls) (List second tls)))
     (let ((body (Bytes writer)) (w (Bytes writer)))
       (Bytes put-u32 body %pg-protocol)
       (List for-each (fn (_ text) (%pg-put-cstring body text))

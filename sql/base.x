@@ -32,14 +32,21 @@
 (def sql-connection
   (fn (_) (%sql-session get (lit name))))
 
+; Whether the session's connection is encrypted
+(def sql-connection-secure?
+  (fn (_) (eq? (%sql-session get (lit secure)) #t)))
+
 ; A scheme a URL may have, the server's port, the variable its client
-; reads a password from, and whether the database is the user's name when
-; none is written
+; reads a password from, whether the database is the user's name when none
+; is written, and the sslmode when none is written.  MySQL and MariaDB
+; servers ask every client for a certificate it may decline to send, and
+; the platform's TLS does not answer that yet, so TLS with them is not
+; tried unless asked for.
 (def %sql-schemes
-  (list (list "postgres" 5432 "PGPASSWORD" #t)
-        (list "postgresql" 5432 "PGPASSWORD" #t)
-        (list "mysql" 3306 "MYSQL_PWD" #f)
-        (list "mariadb" 3306 "MYSQL_PWD" #f)))
+  (list (list "postgres" 5432 "PGPASSWORD" #t "prefer")
+        (list "postgresql" 5432 "PGPASSWORD" #t "prefer")
+        (list "mysql" 3306 "MYSQL_PWD" #f "disable")
+        (list "mariadb" 3306 "MYSQL_PWD" #f "disable")))
 
 (def %sql-before
   (fn (_ mark text)
@@ -57,8 +64,24 @@
     (let ((v (Sys getenv name)))
       (if (and (str? v) (> (Str8 length v) 0)) v ()))))
 
+; What a URL may ask of TLS with sslmode=: none, TLS when the server has
+; it, TLS or no connection, and that with the server's certificate checked
+; for its name against Mozilla's roots
+(def %sql-ssl-modes (list "disable" "prefer" "require" "verify-full"))
+
+; The sslmode a URL's QUERY names, UNSAID when it names none
+(def %sql-ssl-mode
+  (fn (_ unsaid query)
+    (let ((part (if (null? query) ()
+                  (List find (fn (_ p) (Str8 starts? "sslmode=" p)) (Str8 split "&" query)))))
+      (if (null? part) unsaid
+        (let ((mode (Str8 sub 8 (Str8 length part) part)))
+          (if (List includes? mode %sql-ssl-modes) mode
+            (error (Str8 append "Connection Error: sslmode is disable, prefer, require or verify-full, not "
+                                mode))))))))
+
 ; A server's address in the words of a URL, as
-; (USER PASSWORD HOST PORT DATABASE SCHEME):
+; (USER PASSWORD HOST PORT DATABASE SCHEME SSLMODE):
 ; scheme://user:password@host:port/database, every part but the scheme and
 ; the host optional.  The user is PGUSER or USER when none is written, and
 ; the password, the port and the database what the scheme's row says;
@@ -92,7 +115,8 @@
                     ((and (not (null? database)) (> (Str8 length database) 0)) database)
                     ((List ref 3 scheme) user)
                     (#t ()))
-                  (first scheme))))))))
+                  (first scheme)
+                  (%sql-ssl-mode (List ref 4 scheme) (%sql-after "?" address)))))))))
 
 ; A server's results as text.  A result is a string, a notice as it came;
 ; or (NAMES TYPES RIGHTS ROWS TAG): a table for a statement that answers
@@ -125,20 +149,24 @@
       results)))
 
 ; A session with a kind of server: a static method named for the URL's
-; scheme, taking a link and the address, and answering (RUN FINISH), a
-; function of a text that answers its results as text and a function of
-; nothing that ends the session
+; scheme, taking a link and the address, and answering (RUN FINISH SECURE):
+; a function of a text that answers its results as text, a function of
+; nothing that ends the session, and whether the session is encrypted
 (def-class SqlServer ()
   (static
     (method postgres (self link at)
-      (pg-start link (first at) (List second at) (List ref 4 at))
+      (pg-start link (first at) (List second at) (List ref 4 at)
+                (List ref 6 at) (List third at))
       (list (fn (_ text) (sql-remote-text (sql-pg-results (pg-query link text))))
-            (fn (_) (pg-finish link))))
+            (fn (_) (pg-finish link) (link close!))
+            (link secure)))
     (method postgresql (self link at) (SqlServer postgres link at))
     (method mysql (self link at)
-      (my-start link (first at) (List second at) (List ref 4 at))
+      (my-start link (first at) (List second at) (List ref 4 at)
+                (List ref 6 at) (List third at))
       (list (fn (_ text) (sql-remote-text (my-query link text)))
-            (fn (_) (my-finish link))))
+            (fn (_) (my-finish link) (link close!))
+            (link secure)))
     (method mariadb (self link at) (SqlServer mysql link at))))
 
 (def sql-disconnect!
@@ -146,7 +174,7 @@
     (when (%sql-session has? (lit finish))
       ((%sql-session get (lit finish))))
     (List for-each (fn (_ key) (%sql-session del! key))
-                   (list (lit run) (lit finish) (lit name)))
+                   (list (lit run) (lit finish) (lit name) (lit secure)))
     ()))
 
 ; Statements go to the server at URL from here on.  Answers its name: the
@@ -159,6 +187,7 @@
                       SqlServer (sql-socket-link (List third at) (List ref 3 at)) at)))
         (%sql-session set! (lit run) (first session))
         (%sql-session set! (lit finish) (List second session))
+        (%sql-session set! (lit secure) (List third session))
         (%sql-session set! (lit name)
           (if (null? (List ref 4 at)) (List third at)
             (Str8 append (List ref 4 at) "@" (List third at))))
@@ -213,4 +242,5 @@
 
 (provide sql/base
   sql-version sql-run sql-error-text sql-main sql-url-parse sql-connect!
-  sql-disconnect! sql-connection sql-remote-text sql-pg-results)
+  sql-disconnect! sql-connection sql-connection-secure? sql-remote-text
+  sql-pg-results)

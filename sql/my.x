@@ -10,7 +10,9 @@
 ; version 10 of the handshake, protocol 4.1 of the rest): the handshake,
 ; sign-in by mysql_native_password, by caching_sha2_password where the
 ; server has the password cached, and in the clear when the server asks
-; for that, and COM_QUERY, whose results come as text.
+; for that, and COM_QUERY, whose results come as text.  TLS is asked for
+; after the server's handshake, with a short answer that says so, and the
+; full answer then goes through it.
 ;
 ; It speaks over a SqlLink (sql/link).  A packet is a three-byte length,
 ; least byte first, a sequence number, and a payload.  Integers in a
@@ -196,13 +198,15 @@
 (def %my-multi-statements 65536)
 (def %my-multi-results 131072)
 (def %my-plugin-auth 524288)
+(def %my-ssl 2048)
 
 (def %my-capabilities
-  (fn (_ database)
+  (fn (_ database secure)
     (+ %my-long-password %my-long-flag %my-protocol-41 %my-transactions
        %my-secure-connection %my-multi-statements %my-multi-results
        %my-plugin-auth
-       (if (null? database) 0 %my-connect-with-db))))
+       (if (null? database) 0 %my-connect-with-db)
+       (if secure %my-ssl 0))))
 
 ; The most a packet may hold, and utf8mb4_general_ci, as the handshake's
 ; answer names them
@@ -212,9 +216,11 @@
 ; The nonce's length when the handshake does not give one
 (def %my-nonce-length 20)
 
-; The server's handshake: (PLUGIN . NONCE).  The nonce is in two parts,
-; eight bytes after the thread's number and the rest after ten bytes
-; reserved, its whole length one less than the byte before those says.
+; The server's handshake: (PLUGIN NONCE TLS), TLS whether the server takes
+; it.  The nonce is in two parts, eight bytes after the thread's number and
+; the rest after ten bytes reserved, its whole length one less than the
+; byte before those says.  The low half of the server's capabilities is
+; nine bytes past the thread's number.
 (def %my-handshake
   (fn (_ payload)
     (when (%my-error? payload) (error (%my-report payload)))
@@ -223,18 +229,32 @@
     (let ((at (rest (%my-cstring payload 1))))
       (let ((given (Bytes ref payload (+ at 20))))
         (let ((n (if (> given 0) (- given 1) %my-nonce-length)))
-          (pair (first (%my-cstring payload (+ at 31 (if (> (- given 8) 13) (- given 8) 13))))
+          (list (first (%my-cstring payload (+ at 31 (if (> (- given 8) 13) (- given 8) 13))))
                 (Bytes join (Bytes sub payload (+ at 4) 8)
-                            (Bytes sub payload (+ at 31) (- n 8)))))))))
+                            (Bytes sub payload (+ at 31) (- n 8)))
+                (not (= (& (%my-uint payload (+ at 13) 2) %my-ssl) 0))))))))
+
+; What every answer to the handshake opens with: the capabilities, the
+; most a packet may hold, the character set, and 23 bytes reserved.  Alone
+; it is the SSLRequest.
+(def %my-preamble
+  (fn (_ w database secure)
+    (%my-put-uint w (%my-capabilities database secure) 4)
+    (%my-put-uint w %my-max-packet 4)
+    (Bytes put-u8 w %my-charset)
+    (Bytes put w (Bytes of-list (List repeat 23 0)))))
+
+(def %my-ssl-request
+  (fn (_ database)
+    (let ((w (Bytes writer)))
+      (%my-preamble w database #t)
+      (Bytes copy (Bytes written w)))))
 
 ; The handshake's answer
 (def %my-response
-  (fn (_ user database plugin answer)
+  (fn (_ user database plugin answer secure)
     (let ((w (Bytes writer)))
-      (%my-put-uint w (%my-capabilities database) 4)
-      (%my-put-uint w %my-max-packet 4)
-      (Bytes put-u8 w %my-charset)
-      (Bytes put w (Bytes of-list (List repeat 23 0)))
+      (%my-preamble w database secure)
       (Bytes put w user) (Bytes put-u8 w 0)
       (Bytes put-u8 w (Bytes length answer))
       (Bytes put w answer)
@@ -266,20 +286,51 @@
           ((and (= kind %my-more-data) (= (Bytes ref payload 1) %my-fast-auth))
             (self link password))
           ((and (= kind %my-more-data) (= (Bytes ref payload 1) %my-full-auth))
-            (error "Connection Error: the server wants the whole password, which goes only over TLS or under its RSA key, and neither is built"))
+            (if (link secure)
+              (do (%my-send link (+ (first p) 1)
+                    (Bytes join (if (null? password) "" password) %my-nul))
+                  (self link password))
+              (error "Connection Error: the server wants the whole password, which goes only over TLS")))
           (#t (error "Protocol Error: sign-in took a turn that is not read")))))))
 
-; A session on LINK: the handshake, its answer, and the server's OK.
-; DATABASE may be nil.  Answers LINK.
+; Whether a session takes TLS: MODE as sql/pg reads it, and OFFERED
+; whether the server's handshake says it can
+(def %my-secure?
+  (fn (_ mode offered)
+    (match
+      ((str=? mode "disable") #f)
+      (offered #t)
+      ((str=? mode "prefer") #f)
+      (#t (error "Connection Error: the server does not take TLS, and sslmode asks for it")))))
+
+; TLS on LINK.  These servers ask every client for a certificate, and a
+; TLS that will not answer that ends the handshake there: its refusal is
+; said with what to do about it.
+(def %my-secure!
+  (fn (_ link host verify)
+    (guard (e (let ((text (Str8 str e)))
+                (error (if (Str8 includes? "client certificate" text)
+                         "Connection Error: TLS with a MySQL or MariaDB server is not possible yet: the server asks for a client certificate, which x-lang's TLS does not answer; sslmode=disable connects in the clear"
+                         text))))
+      (link secure! host verify))))
+
+; A session on LINK: the handshake, TLS when TLS, a list of a mode and the
+; server's name, asks for it and the server has it, the handshake's
+; answer, and the server's OK.  DATABASE may be nil.  Answers LINK.
 (def my-start
-  (fn (_ link user password database)
+  (fn (_ link user password database . tls)
     (let ((hello (%my-packet link)))
       (let ((shake (%my-handshake (rest hello))))
-        (%my-send link (+ (first hello) 1)
-          (%my-response user database (first shake)
-                        (my-auth (first shake) password (rest shake))))
-        (%my-signed-in link password)
-        link))))
+        (let ((secure (if (null? tls) #f (%my-secure? (first tls) (List third shake)))))
+          (when secure
+            (%my-send link (+ (first hello) 1) (%my-ssl-request database))
+            (%my-secure! link (List second tls) (str=? (first tls) "verify-full")))
+          (%my-send link (+ (first hello) (if secure 2 1))
+            (%my-response user database (first shake)
+                          (my-auth (first shake) password (List second shake))
+                          secure))
+          (%my-signed-in link password)
+          link)))))
 
 ; --- queries -----------------------------------------------------------------
 
