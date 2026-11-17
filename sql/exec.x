@@ -20,8 +20,8 @@
 (import x/type/class)
 (import x/type/dict)
 (import sql/eval
-  sql-eval sql-expr-name sql-column-index sql-cast sql-truth sql-order
-  sql-null?)
+  sql-eval sql-expr-name sql-column-index sql-aggregated? sql-cast
+  sql-truth sql-order sql-null? sql-value-text)
 
 ; --- the tables --------------------------------------------------------------
 
@@ -44,15 +44,66 @@
 
 ; --- FROM --------------------------------------------------------------------
 
-; A scope's columns for a FROM: (QUALIFIER NAME TYPE) each, the qualifier
-; the alias when there is one and the table's name when not
-(def %sql-scope-columns
+; What FROM reads is (COLUMNS . ROWS): COLUMNS a list of
+; (QUALIFIER NAME TYPE), ROWS lists of x values.
+
+; One table: the qualifier its alias when it has one, its name when not
+(def %sql-source
+  (fn (_ name alias)
+    (let ((table (%sql-table name)))
+      (let ((qualifier (if (null? alias) (first table) alias)))
+        (pair (List map (fn (_ c) (list qualifier (first c) (List second c)))
+                        (List second table))
+              (List third table))))))
+
+(def %sql-nulls (fn (_ columns) (List repeat (List length columns) ())))
+
+; LEFT joined to RIGHT: every pair of rows KEEPS? keeps, each left row's
+; in turn.  A left row with none is kept beside NULLs in a left or full
+; join, and a right row with none after them all in a right or full one.
+(def %sql-join-rows
+  (fn (_ left right kind keeps?)
+    (let ((joined (List map
+                    (fn (_ l)
+                      (List filter keeps?
+                        (List map (fn (_ r) (List append l r)) (rest right))))
+                    (rest left))))
+      (List append
+        (List flat-map
+          (fn (_ p)
+            (if (and (null? (rest p))
+                     (List includes? kind (list (lit left) (lit full))))
+              (list (List append (first p) (%sql-nulls (first right))))
+              (rest p)))
+          (List zip (rest left) joined))
+        (if (List includes? kind (list (lit right) (lit full)))
+          (List map (fn (_ r) (List append (%sql-nulls (first left)) r))
+            (List filter
+              (fn (_ r)
+                (List none? (fn (_ l) (keeps? (List append l r))) (rest left)))
+              (rest right)))
+          ())))))
+
+(def %sql-join
+  (fn (_ left right kind on)
+    (when (sql-aggregated? on)
+      (error "Binder Error: JOIN clause cannot contain aggregates!"))
+    (let ((columns (List append (first left) (first right))))
+      (pair columns
+        (%sql-join-rows left right kind
+          (fn (_ row)
+            (if (null? on) #t
+              (eq? (sql-truth (sql-eval on (list columns row ()))) #t))))))))
+
+; Every table of a FROM, each joined to what is before it
+(def %sql-from
   (fn (_ from)
-    (let ((table (%sql-table (first from))))
-      (let ((qualifier (if (null? (List second from)) (first table)
-                         (List second from))))
-        (List map (fn (_ c) (list qualifier (first c) (List second c)))
-                  (List second table))))))
+    (List fold
+      (fn (_ left join)
+        (%sql-join left (%sql-source (List second join) (List third join))
+                   (first join) (List ref 3 join)))
+      (%sql-source (first (first from)) (List second (first from)))
+      (rest from))))
 
 ; The items a star stands for: every column, or every column of QUALIFIER
 (def %sql-star
@@ -96,16 +147,18 @@
 
 ; --- ORDER BY ----------------------------------------------------------------
 
-; What a term sorts by: an integer constant is the place of an item, and a
-; bare name that is an item's alias is that item
-(def %sql-order-expr
-  (fn (_ e items)
+; What a term of ORDER BY or GROUP BY stands for: an integer constant is
+; the place of an item, and a bare name that is an item's alias is that
+; item.  CLAUSE names the clause in the error of a place past the list.
+(def %sql-term-expr
+  (fn (_ e items clause)
     (match
       ((eq? (first e) (lit int))
         (let ((n (List second e)))
           (if (and (>= n 1) (<= n (List length items)))
             (first (List ref (- n 1) items))
-            (error (Str8 str "Binder Error: ORDER term out of range - should be between 1 and "
+            (error (Str8 str "Binder Error: " clause
+                             " term out of range - should be between 1 and "
                              (List length items))))))
       ((and (eq? (first e) (lit col)) (null? (List third e)))
         (let ((item (List find
@@ -133,18 +186,115 @@
       (let ((c (%sql-key-order (first xs) (first ys) (first terms))))
         (if (= c 0) (self (rest xs) (rest ys) (rest terms)) c)))))
 
-; SCOPES in the order TERMS give; rows that tie keep their order
+; SCOPES in the order TERMS give, EXPRS what each term sorts by; rows that
+; tie keep their order
 (def %sql-sorted
-  (fn (_ scopes terms items)
+  (fn (_ scopes terms exprs)
     (if (null? terms) scopes
-      (let ((exprs (List map (fn (_ term) (%sql-order-expr (first term) items))
-                             terms)))
-        (List map rest
-          (List sort
-            (fn (_ a b) (< (%sql-keys-order (first a) (first b) terms) 0))
-            (List map
-              (fn (_ s) (pair (List map (fn (_ e) (sql-eval e s)) exprs) s))
-              scopes)))))))
+      (List map rest
+        (List sort
+          (fn (_ a b) (< (%sql-keys-order (first a) (first b) terms) 0))
+          (List map
+            (fn (_ s) (pair (List map (fn (_ e) (sql-eval e s)) exprs) s))
+            scopes))))))
+
+; --- GROUP BY ----------------------------------------------------------------
+
+; A text two lists of values share only when they are the same values: each
+; value's length and text, and N for a NULL
+(def %sql-values-key
+  (fn (_ values)
+    (Str8 join ""
+      (List map
+        (fn (_ v)
+          (if (sql-null? v) "N"
+            (let ((text (sql-value-text v)))
+              (Str8 str (Str8 length text) ":" text))))
+        values))))
+
+; THINGS in lists that share a key KEY-OF answers, the lists in the order
+; their keys first come and each in the order its things came
+(def %sql-partition
+  (fn (_ things key-of)
+    (let ((held (Dict make)))
+      (let ((keys (List fold
+                    (fn (_ keys thing)
+                      (let ((k (key-of thing)))
+                        (if (held has? k)
+                          (do (held set! k (pair thing (held get k))) keys)
+                          (do (held set! k (list thing)) (pair k keys)))))
+                    () things)))
+        (List map (fn (_ k) (List reverse (held get k))) (List reverse keys))))))
+
+; Whether a SELECT answers a row a group: it has a GROUP BY, a HAVING, or
+; an aggregate among its items or its ORDER BY
+(def %sql-grouped?
+  (fn (_ stmt items)
+    (or (not (null? (List ref 7 stmt)))
+        (not (null? (List ref 8 stmt)))
+        (List any? (fn (_ i) (sql-aggregated? (first i))) items)
+        (List any? (fn (_ term) (sql-aggregated? (first term))) (List ref 4 stmt)))))
+
+; What the rows are grouped by: GROUP BY's terms, or under ALL every item
+; that holds no aggregate
+(def %sql-group-keys
+  (fn (_ group items)
+    (match
+      ((null? group) ())
+      ((eq? group (lit all))
+        (List map first
+          (List reject (fn (_ i) (sql-aggregated? (first i))) items)))
+      (#t
+        (List map
+          (fn (_ e)
+            (let ((key (%sql-term-expr e items "GROUP BY")))
+              (when (sql-aggregated? key)
+                (error "Binder Error: GROUP BY clause cannot contain aggregates!"))
+              key))
+          group)))))
+
+; Two expressions are one: the same tree, or two names for one column
+(def %sql-same?
+  (fn (_ a b columns)
+    (or (equal? a b)
+        (and (eq? (first a) (lit col)) (eq? (first b) (lit col))
+             (= (sql-column-index (List second a) (List third a) columns)
+                (sql-column-index (List second b) (List third b) columns))))))
+
+; E can be answered for a group: every column in it is inside a key or an
+; aggregate
+(def %sql-check-grouped
+  (fn (self e keys columns)
+    (match
+      ((List any? (fn (_ k) (%sql-same? e k columns)) keys) ())
+      ((eq? (first e) (lit call)) ())
+      ((eq? (first e) (lit col))
+        (error (Str8 str "Binder Error: column \"" (List second e)
+                         "\" must appear in the GROUP BY clause or must be part of an aggregate function.")))
+      (#t
+        (List for-each
+          (fn (_ x)
+            (when (and (pair? x) (symbol? (first x))) (self x keys columns)))
+          (rest e))))))
+
+; The scope of one group: its first row, or NULLs when it has none, and
+; its rows' scopes
+(def %sql-group-scope
+  (fn (_ columns members)
+    (list columns
+          (if (or (null? members) (null? (first members))) (%sql-nulls columns)
+            (List second (first members)))
+          (list members))))
+
+; SCOPES as a scope a group.  With no keys they are one group, though
+; there be no row in it.
+(def %sql-groups
+  (fn (_ scopes keys columns)
+    (if (null? keys) (list (%sql-group-scope columns scopes))
+      (List map (fn (_ members) (%sql-group-scope columns members))
+        (%sql-partition scopes
+          (fn (_ s)
+            (%sql-values-key (List map (fn (_ k) (sql-eval k s)) keys))))))))
 
 ; --- LIMIT and OFFSET --------------------------------------------------------
 
@@ -216,42 +366,75 @@
 
 ; --- the statements ----------------------------------------------------------
 
-; The rows of a SELECT: STMT's items over the scopes its FROM and WHERE
-; leave, sorted and cut
-(def %sql-select
-  (fn (_ stmt columns)
-    (let ((from (List third stmt)) (where (List ref 3 stmt)))
-      (let ((scopes (if (null? from) (list ())
-                      (List map (fn (_ row) (pair columns row))
-                                (List third (%sql-table (first from)))))))
+; The scopes a SELECT's FROM and WHERE leave: a row of the tables each, or
+; one with nothing in it when there is no FROM
+(def %sql-filtered
+  (fn (_ stmt source)
+    (let ((where (List ref 3 stmt)))
+      (when (sql-aggregated? where)
+        (error "Binder Error: WHERE clause cannot contain aggregates!"))
+      (let ((scopes (if (null? source) (list ())
+                      (List map (fn (_ row) (list (first source) row ()))
+                                (rest source)))))
         (if (null? where) scopes
           (List filter (fn (_ s) (eq? (sql-truth (sql-eval where s)) #t))
                        scopes))))))
 
+; SCOPES as the groups a grouped SELECT answers for, HAVING applied.  ITEMS
+; and ORDER, what the terms of ORDER BY sort by, are checked against the
+; keys first.
+(def %sql-grouped
+  (fn (_ stmt items order columns scopes)
+    (let ((keys (%sql-group-keys (List ref 7 stmt) items))
+          (having (List ref 8 stmt)))
+      (List for-each (fn (_ i) (%sql-check-grouped (first i) keys columns)) items)
+      (List for-each (fn (_ e) (%sql-check-grouped e keys columns)) order)
+      (unless (null? having) (%sql-check-grouped having keys columns))
+      (let ((groups (%sql-groups scopes keys columns)))
+        (if (null? having) groups
+          (List filter (fn (_ g) (eq? (sql-truth (sql-eval having g)) #t))
+                       groups))))))
+
 ; The types of ITEMS' columns when no row shows them: each item's type over
-; a row of NULLs
+; a row of NULLs, a group with no rows when GROUPED
 (def %sql-item-types
-  (fn (_ items columns)
-    (let ((scope (if (null? columns) ()
-                   (pair columns (List repeat (List length columns) ())))))
+  (fn (_ items columns grouped)
+    (let ((scope (match
+                   (grouped (%sql-group-scope columns ()))
+                   ((null? columns) ())
+                   (#t (list columns (%sql-nulls columns) ())))))
       (List map (fn (_ i) (first (sql-eval (first i) scope))) items))))
+
+; ROWS with each row once, when DISTINCT
+(def %sql-distinct
+  (fn (_ rows distinct)
+    (if distinct (List map first (%sql-partition rows %sql-values-key)) rows)))
 
 (def-class SqlStatement ()
   (static
     (method select (self stmt)
-      (let ((columns (if (null? (List third stmt)) ()
-                       (%sql-scope-columns (List third stmt)))))
-        (let ((items (%sql-expand (List second stmt) columns)))
-          (let ((rows (List map
-                        (fn (_ s) (List map (fn (_ i) (sql-eval (first i) s)) items))
-                        (%sql-page
-                          (%sql-sorted (%sql-select stmt columns) (List ref 4 stmt) items)
-                          (%sql-count (List ref 6 stmt))
-                          (%sql-count (List ref 5 stmt))))))
-            (list (List map (fn (_ i) (%sql-heading i columns)) items)
-                  (if (null? rows) (%sql-item-types items columns)
-                    (List map first (first rows)))
-                  rows)))))
+      (let ((source (if (null? (List third stmt)) () (%sql-from (List third stmt)))))
+        (let ((columns (if (null? source) () (first source))))
+          (let ((items (%sql-expand (List second stmt) columns)))
+            (let ((grouped (%sql-grouped? stmt items))
+                  (order (List map (fn (_ term) (%sql-term-expr (first term) items "ORDER"))
+                                   (List ref 4 stmt))))
+              (let ((scopes (if grouped
+                              (%sql-grouped stmt items order columns
+                                            (%sql-filtered stmt source))
+                              (%sql-filtered stmt source))))
+                (let ((rows (%sql-page
+                              (%sql-distinct
+                                (List map
+                                  (fn (_ s) (List map (fn (_ i) (sql-eval (first i) s)) items))
+                                  (%sql-sorted scopes (List ref 4 stmt) order))
+                                (List ref 9 stmt))
+                              (%sql-count (List ref 6 stmt))
+                              (%sql-count (List ref 5 stmt)))))
+                  (list (List map (fn (_ i) (%sql-heading i columns)) items)
+                        (if (null? rows) (%sql-item-types items columns grouped)
+                          (List map first (first rows)))
+                        rows))))))))
     (method create (self stmt)
       (let ((name (List second stmt)) (columns (List third stmt)))
         (%sql-distinct-columns columns)

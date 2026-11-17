@@ -92,24 +92,24 @@ Binder Error: Referenced column "a" was not found because the FROM clause is mis
 
 ## errors not built
 
-### GROUP BY
+### UNION
 
 ```x
-(sql "SELECT 1 GROUP BY 1")
+(sql "SELECT 1 UNION SELECT 2")
 ```
 ---
 ```output
-Not implemented Error: GROUP
+Not implemented Error: UNION
 ```
 
-### DISTINCT
+### WITH
 
 ```x
-(sql "SELECT DISTINCT 1")
+(sql "WITH x AS (SELECT 1) SELECT 2")
 ```
 ---
 ```output
-Not implemented Error: DISTINCT
+Parser Error: syntax error at or near "WITH"
 ```
 
 ### a comparison across types
