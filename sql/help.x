@@ -90,6 +90,7 @@
             "DOUBLE (FLOAT8)        64-bit floating point"
             "VARCHAR (TEXT, STRING) text"
             "BOOLEAN (BOOL)         true or false"
+            "DATE  TIME  TIMESTAMP  INTERVAL     see .help dates"
             "A constant: 42 is the narrowest integer that holds it, 1.50 a"
             "DECIMAL(3,2), 1e3 a DOUBLE, 'text' a VARCHAR.")
       (list "SELECT 42, 1.50, 1e3, 'text', true, NULL;"))
@@ -116,6 +117,22 @@
             "For the functions of a group of rows, see .help group.")
       (list "SELECT upper(left(b, 1)) || substring(b, 2), length(b) FROM t;"
             "SELECT coalesce(a, 0), round(avg(a)) FROM t GROUP BY ALL;"))
+    (list "dates" "Dates, times, and the time between them."
+      (list "DATE '2026-11-17'    TIME '12:34:56'    TIMESTAMP '2026-11-17 12:34:56.5'"
+            "INTERVAL '1 year 2 months 3 days 04:05:06'    INTERVAL 2 HOUR"
+            "date + days, date - date            a date, and a count of days"
+            "date or timestamp + interval        a timestamp"
+            "timestamp - timestamp               an interval"
+            "Parts:  year month day hour minute second quarter dayofweek dayofyear"
+            "        date_part('part', value)    EXTRACT(part FROM value)"
+            "Units:  date_trunc('unit', value)   date_diff('unit', from, to)"
+            "Others: dayname monthname last_day make_date(y, m, d)"
+            "        strftime(value, format)     %Y %y %m %d %H %M %S %B %b %A %a %j"
+            "        now() current_timestamp current_date today()"
+            "A month added keeps the day of the month, or takes the month's last."
+            "There is no time zone: now() is UTC.")
+      (list "SELECT DATE '2026-01-31' + INTERVAL 1 MONTH, date_diff('day', d, current_date) FROM t;"
+            "SELECT date_trunc('month', ts), count(*) FROM t GROUP BY ALL;"))
     (list "cast" "A value as another type."
       (list "CAST(expression AS type)"
             "expression::type"

@@ -29,6 +29,12 @@ What is built:
   type that holds it; DECIMAL, exact, a constant with a point taking the
   width and scale it is written with; DOUBLE, shown in the fewest digits
   that read back as it; VARCHAR; BOOLEAN; NULL.
+- **Dates and times.** DATE, TIME, TIMESTAMP to the microsecond, and
+  INTERVAL, with no time zone. A date and a count of days, a moment and
+  an interval, two moments apart; a month added keeps the day or takes
+  the month's last. `year month day hour minute second quarter
+  dayofweek dayofyear date_part EXTRACT date_trunc date_diff dayname
+  monthname last_day make_date strftime now current_date today`.
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one. `/` answers a DOUBLE. `// %` on integers.
@@ -104,8 +110,8 @@ In this order:
 
 1. `UNION`, `INTERSECT` and `EXCEPT`, `JOIN ... USING`, window
    functions, and a WITH that reads itself.
-2. The remaining types: REAL, the small integers, dates and times; and
-   the functions that go with them.
+2. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
+   ZONE, and the functions that go with them.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
    and structs, reading CSV and JSON files by name.
 4. The prompt: coloured values in a result, paging a long one, a help
@@ -146,6 +152,9 @@ No script runs against Oracle's MySQL.
 - Every row of a result is shown; DuckDB cuts a long one to forty rows.
 - `//` and `%` take integers only; DuckDB's `//` on a decimal or a double
   is its `/`.
+- There is no time zone: `now()` is a TIMESTAMP in UTC, where DuckDB's is
+  a TIMESTAMP WITH TIME ZONE. A time's minutes and seconds past 59 are
+  not refused.
 - `round` takes one argument; `LIKE` has no `ESCAPE`; `ILIKE` folds
   ASCII letters only.
 - Groups come in the order their keys first appear; DuckDB promises no
