@@ -22,7 +22,7 @@
 (import sql/words sql-lower sql-same-name?)
 (import sql/eval
   sql-eval sql-expr-name sql-column sql-column-node sql-column-index
-  sql-aggregated? sql-cast
+  sql-aggregated? sql-aggregate-call? sql-cast
   sql-truth sql-order sql-null? sql-value-text)
 
 ; --- the tables --------------------------------------------------------------
@@ -270,15 +270,21 @@
   (fn (self e keys columns)
     (match
       ((List any? (fn (_ k) (%sql-same? e k columns)) keys) ())
-      ((eq? (first e) (lit call)) ())
+      ((sql-aggregate-call? e) ())
       ((eq? (first e) (lit col))
         (error (Str8 str "Binder Error: column \"" (List second e)
                          "\" must appear in the GROUP BY clause or must be part of an aggregate function.")))
-      (#t
-        (List for-each
-          (fn (_ x)
-            (when (and (pair? x) (symbol? (first x))) (self x keys columns)))
-          (rest e))))))
+      (#t (%sql-check-parts (rest e) keys columns)))))
+
+; Every expression among PARTS, at any depth of lists, checked
+(def %sql-check-parts
+  (fn (self parts keys columns)
+    (List for-each
+      (fn (_ x)
+        (when (pair? x)
+          (if (symbol? (first x)) (%sql-check-grouped x keys columns)
+            (self x keys columns))))
+      parts)))
 
 ; The scope of one group: its first row, or NULLs when it has none, and
 ; its rows' scopes

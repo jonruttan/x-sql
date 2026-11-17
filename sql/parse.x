@@ -37,6 +37,12 @@
 ;                                   as an integer, TEXT as it was written
 ;   (dbl TEXT)                      a number with an exponent, as written
 ;   (cast E TYPE SHOWN)             SHOWN the type as a heading spells it
+;   (case WHENS ELSE)               WHENS a list of (CONDITION RESULT), ELSE
+;                                   nil or an expression; CASE x WHEN v is
+;                                   read as CASE WHEN x = v
+;   (in E LIST)  (between E LOW HIGH)
+;   (like E PATTERN NEGATED ANY-CASE)
+;   NOT IN and NOT BETWEEN are a (not ...) around these
 ;   (call NAME ARGS DISTINCT)   ARGS expressions, or one (star ()) in count(*)
 ;   (neg E)  (not E)  (is-null E NEGATED)
 ;   (and A B)  (or A B)
@@ -131,6 +137,43 @@
               (list (lit dec) (first read) (List second read) (List third read) text)))))
       (#t (error (Str8 str "Not implemented Error: the number " text))))))
 
+; One WHEN of a CASE, TS after the word: (CONDITION RESULT), the condition
+; a comparison with OPERAND when the CASE has one
+(def %sql-when
+  (fn (_ operand ts)
+    (let ((condition (%sql-expr ts)))
+      (if (%sql-kw? (rest condition) "THEN")
+        (let ((result (%sql-expr (rest (rest condition)))))
+          (pair (list (if (null? operand) (first condition)
+                        (list (lit bin) (lit eq) operand (first condition)))
+                      (first result))
+                (rest result)))
+        (%sql-near (rest condition))))))
+
+; The WHENs of a CASE, then its ELSE and its END: ((WHENS ELSE) . tokens)
+(def %sql-whens
+  (fn (self operand ts)
+    (match
+      ((%sql-kw? ts "WHEN")
+        (let ((one (%sql-when operand (rest ts))))
+          (let ((more (self operand (rest one))))
+            (pair (list (pair (first one) (first (first more))) (List second (first more)))
+                  (rest more)))))
+      ((%sql-kw? ts "ELSE")
+        (let ((e (%sql-expr (rest ts))))
+          (if (%sql-kw? (rest e) "END") (pair (list () (first e)) (rest (rest e)))
+            (%sql-near (rest e)))))
+      ((%sql-kw? ts "END") (pair (list () ()) (rest ts)))
+      (#t (%sql-near ts)))))
+
+; A CASE, TS after the word: an operand unless a WHEN comes first
+(def %sql-case
+  (fn (_ ts)
+    (let ((operand (if (%sql-kw? ts "WHEN") (pair () ts) (%sql-expr ts))))
+      (unless (%sql-kw? (rest operand) "WHEN") (%sql-near (rest operand)))
+      (let ((whens (%sql-whens (first operand) (rest operand))))
+        (pair (pair (lit case) (first whens)) (rest whens))))))
+
 ; A whole number in parentheses or two, as a list; nil and TS as it was
 ; when there is no parenthesis
 (def %sql-type-arguments
@@ -187,6 +230,7 @@
         (let ((tag (first tok)) (text (List second tok)))
           (match
             ((eq? tag (lit num)) (pair (%sql-number text (List third tok)) (rest ts)))
+            ((%sql-kw? ts "CASE") (%sql-case (rest ts)))
             ((and (%sql-word? ts "CAST") (%sql-op? (rest ts) "("))
               (let ((e (%sql-expr (rest (rest ts)))))
                 (if (%sql-kw? (rest e) "AS")
@@ -205,7 +249,8 @@
                 (if (%sql-op? (rest e) ")")
                   (pair (first e) (rest (rest e)))
                   (%sql-near (rest e)))))
-            ((and (eq? tag (lit id)) (%sql-op? (rest ts) "("))
+            ((and (or (eq? tag (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
+                  (%sql-op? (rest ts) "("))
               (%sql-call text (rest (rest ts))))
             ((%sql-name? ts)
               (if (and (%sql-op? (rest ts) ".") (%sql-name? (rest (rest ts))))
@@ -283,6 +328,38 @@
 
 (def %sql-compare-ops (list "=" "==" "<>" "!=" "<" "<=" ">" ">="))
 
+; The words that test a value against others, each of which NOT may come
+; before
+(def %sql-membership-words (list "IN" "BETWEEN" "LIKE" "ILIKE"))
+
+(def %sql-membership?
+  (fn (_ ts)
+    (let ((at (if (%sql-kw? ts "NOT") (rest ts) ts)))
+      (List any? (fn (_ word) (%sql-kw? at word)) %sql-membership-words))))
+
+; LEFT [NOT] IN (list), [NOT] BETWEEN low AND high, or [NOT] LIKE pattern,
+; TS at the NOT or the word
+(def %sql-membership
+  (fn (_ left ts)
+    (let ((negated (%sql-kw? ts "NOT")))
+      (let ((at (if negated (rest ts) ts)))
+        (let ((wrap (fn (_ node) (if negated (list (lit not) node) node))))
+          (match
+            ((%sql-kw? at "IN")
+              (let ((l (%sql-parenthesized %sql-expr (rest at))))
+                (pair (wrap (list (lit in) left (first l))) (rest l))))
+            ((%sql-kw? at "BETWEEN")
+              (let ((low (%sql-concat (rest at))))
+                (if (%sql-kw? (rest low) "AND")
+                  (let ((high (%sql-concat (rest (rest low)))))
+                    (pair (wrap (list (lit between) left (first low) (first high)))
+                          (rest high)))
+                  (%sql-near (rest low)))))
+            (#t
+              (let ((pattern (%sql-concat (rest at))))
+                (pair (list (lit like) left (first pattern) negated (%sql-kw? at "ILIKE"))
+                      (rest pattern))))))))))
+
 (def %sql-compare
   (fn (_ ts)
     (let ((l (%sql-concat ts)))
@@ -293,6 +370,9 @@
                (self (list (lit bin) (%sql-op-name (List second (first ts)))
                            left (first r))
                      (rest r))))
+           ((%sql-membership? ts)
+             (let ((r (%sql-membership left ts)))
+               (self (first r) (rest r))))
            ((%sql-kw? ts "IS")
              (let ((negated (%sql-kw? (rest ts) "NOT")))
                (let ((after (if negated (rest (rest ts)) (rest ts))))

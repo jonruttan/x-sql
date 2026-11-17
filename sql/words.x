@@ -39,7 +39,7 @@
         "FALSE" "GROUP" "ORDER" "HAVING" "LIMIT" "OFFSET" "UNION" "EXCEPT"
         "INTERSECT" "ON" "USING" "JOIN" "CASE" "WHEN" "THEN" "ELSE" "END"
         "IN" "DISTINCT" "ALL" "CREATE" "TABLE" "INTO" "WITH" "INNER" "LEFT"
-        "RIGHT" "FULL" "CROSS" "OUTER" "NATURAL"))
+        "RIGHT" "FULL" "CROSS" "OUTER" "NATURAL" "BETWEEN" "LIKE" "ILIKE"))
 
 ; The words the parser reads where the grammar asks for them and that are
 ; names everywhere else

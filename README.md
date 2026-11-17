@@ -34,6 +34,13 @@ What is built:
   a double when either is one. `/` answers a DOUBLE. `// %` on integers.
   `= == <> != < <= > >=` across the numeric types; `AND OR NOT` in three
   values; `IS [NOT] NULL`; `||`.
+- **Conditions.** `CASE` in both forms, its answers going into one
+  type; `[NOT] IN (...)`; `[NOT] BETWEEN`; `[NOT] LIKE` and `ILIKE` with
+  `%` and `_`.
+- **Functions.** Text: `lower upper length trim ltrim rtrim substring
+  substr left right replace reverse repeat concat starts_with contains`,
+  counting characters, not bytes. Numbers: `abs floor ceil round sqrt
+  power`. Choices: `coalesce ifnull nullif greatest least typeof`.
 - **Casts.** `CAST(x AS type)` and `x::type` among the numbers, text and
   booleans, rounding as DuckDB does: a double's half to the even integer,
   a decimal's away from zero.
@@ -91,8 +98,8 @@ answered differently.
 In this order:
 
 1. Subqueries, `UNION`, `JOIN ... USING`, `UPDATE` and `DELETE`.
-2. The scalar functions, `CASE`, `IN`, `BETWEEN`, `LIKE`, and the
-   remaining types: REAL, the small integers, dates and times.
+2. The remaining types: REAL, the small integers, dates and times; and
+   the functions that go with them.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, `GROUP BY ALL`, lists
    and structs, reading CSV and JSON files by name.
 4. The prompt: coloured values in a result, paging a long one, a help
@@ -133,6 +140,8 @@ No script runs against Oracle's MySQL.
 - Every row of a result is shown; DuckDB cuts a long one to forty rows.
 - `//` and `%` take integers only; DuckDB's `//` on a decimal or a double
   is its `/`.
+- `round` takes one argument; `LIKE` has no `ESCAPE`; `ILIKE` folds
+  ASCII letters only.
 - Groups come in the order their keys first appear; DuckDB promises no
   order.
 - A join compares every pair of rows.
