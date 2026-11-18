@@ -146,15 +146,19 @@
       (list "DROP TABLE [IF EXISTS] name")
       (list "DROP TABLE IF EXISTS t;"))
     (list "types" "The types of values and columns."
-      (list "INTEGER (INT, INT4)    32-bit integer"
+      (list "TINYINT (INT1)         8-bit integer"
+            "SMALLINT (INT2, SHORT) 16-bit integer"
+            "INTEGER (INT, INT4)    32-bit integer"
             "BIGINT (INT8, LONG)    64-bit integer"
             "HUGEINT                128-bit integer"
             "DECIMAL(width, scale)  exact, NUMERIC its other name; (18, 3) alone"
             "DOUBLE (FLOAT8)        64-bit floating point"
+            "REAL (FLOAT, FLOAT4)   32-bit floating point"
             "VARCHAR (TEXT, STRING) text"
             "BOOLEAN (BOOL)         true or false"
             "DATE  TIME  TIMESTAMP  INTERVAL     see .help dates"
-            "A constant: 42 is the narrowest integer that holds it, 1.50 a"
+            "A constant: 42 is an INTEGER or the wider type that holds it, and"
+            "beside a TINYINT or SMALLINT one of those when it fits; 1.50 is a"
             "DECIMAL(3,2), 1e3 a DOUBLE, 'text' a VARCHAR.")
       (list "SELECT 42, 1.50, 1e3, 'text', true, NULL;"))
     (list "conditions" "Choosing by a condition, and testing a value against others."

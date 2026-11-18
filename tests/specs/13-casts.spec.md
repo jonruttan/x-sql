@@ -267,12 +267,12 @@ Conversion Error: Type DOUBLE with value inf can't be cast because the value is 
 
 ### a type that is not built
 
-DuckDB answers a FLOAT.
+DuckDB answers a UINTEGER.
 
 ```x
-(sql "SELECT 1::REAL")
+(sql "SELECT 1::UINTEGER")
 ```
 ---
 ```output
-Not implemented Error: the type REAL
+Not implemented Error: the type UINTEGER
 ```
