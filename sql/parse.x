@@ -67,13 +67,18 @@
 ;   (in E LIST)  (between E LOW HIGH)
 ;   (like E PATTERN NEGATED ANY-CASE)
 ;   NOT IN and NOT BETWEEN are a (not ...) around these
-;   (over CALL PARTITION ORDER FRAME)   a call OVER a window: PARTITION a
+;   (over CALL PARTITION ORDER FRAME BASE)
+;                                   a call OVER a window: PARTITION a
 ;                                   list of expressions, ORDER a list of
 ;                                   terms as a SELECT's, FRAME nil or
-;                                   (LOW HIGH), each end the name
-;                                   unbounded or a count of rows from
-;                                   the current one, behind it when
-;                                   negative
+;                                   (MODE LOW HIGH EXCLUDE): MODE rows,
+;                                   range or groups; an end unbounded,
+;                                   current, or (WAY EXPR), WAY -1 for
+;                                   PRECEDING and 1 for FOLLOWING;
+;                                   EXCLUDE nil or (GROUP SELF TEXT).
+;                                   BASE names a window of the WINDOW
+;                                   clause while a statement is read
+;                                   and is nil once it is
 ;   (subquery SELECT)               a select statement in parentheses, for
 ;                                   its one value
 ;   (in-query E SELECT)             E IN (select statement)
@@ -87,7 +92,8 @@
 (import x/type/list)
 (import x/type/str)
 (import sql/words
-  sql-upper sql-lower sql-binary-ops sql-type-words sql-file-functions)
+  sql-upper sql-lower sql-same-name? sql-binary-ops sql-type-words
+  sql-file-functions)
 (import sql/lex sql-tokenize)
 (import sql/number sql-decimal-read)
 
@@ -379,8 +385,8 @@
             ((%sql-name? ts) (%sql-column-name ts))
             (#t (%sql-near ts))))))))
 
-; One end of a ROWS frame: UNBOUNDED PRECEDING or FOLLOWING, CURRENT ROW,
-; or a count and PRECEDING or FOLLOWING, as (END . tokens-left)
+; One end of a frame: UNBOUNDED PRECEDING or FOLLOWING, CURRENT ROW, or an
+; expression and PRECEDING or FOLLOWING, as (END . tokens-left)
 (def %sql-frame-end
   (fn (_ ts)
     (match
@@ -388,51 +394,155 @@
         (pair (lit unbounded) (rest (rest ts))))
       ((not (null? (%sql-after ts (list "UNBOUNDED" "FOLLOWING"))))
         (pair (lit unbounded) (rest (rest ts))))
-      ((not (null? (%sql-after ts (list "CURRENT" "ROW")))) (pair 0 (rest (rest ts))))
-      ((and (not (null? ts)) (eq? (first (first ts)) (lit num)) (= (List third (first ts)) 1)
-            (%sql-word? (rest ts) "PRECEDING"))
-        (pair (- 0 (%sql-digits (List second (first ts)) 0 (Str8 length (List second (first ts))) 0))
-              (rest (rest ts))))
-      ((and (not (null? ts)) (eq? (first (first ts)) (lit num)) (= (List third (first ts)) 1)
-            (%sql-word? (rest ts) "FOLLOWING"))
-        (pair (%sql-digits (List second (first ts)) 0 (Str8 length (List second (first ts))) 0)
-              (rest (rest ts))))
-      (#t (%sql-near ts)))))
+      ((not (null? (%sql-after ts (list "CURRENT" "ROW"))))
+        (pair (lit current) (rest (rest ts))))
+      (#t
+        (let ((e (%sql-expr ts)))
+          (match
+            ((%sql-word? (rest e) "PRECEDING") (pair (list -1 (first e)) (rest (rest e))))
+            ((%sql-word? (rest e) "FOLLOWING") (pair (list 1 (first e)) (rest (rest e))))
+            (#t (%sql-near (rest e)))))))))
 
-; A window's frame, TS after ROWS: BETWEEN two ends, or one end, the other
-; then the current row
-(def %sql-frame
+; What a frame leaves out, by the words after EXCLUDE: (GROUP SELF TEXT),
+; GROUP whether the row's peers go, SELF whether the row stays, TEXT the
+; words for a heading
+(def %sql-excludes
+  (list (list (list "CURRENT" "ROW") (list #f #f "CURRENT ROW"))
+        (list (list "GROUP") (list #t #f "GROUP"))
+        (list (list "TIES") (list #t #t "TIES"))
+        (list (list "NO" "OTHERS") ())))
+
+; EXCLUDE's words at TS, as (EXCLUDE . tokens-left)
+(def %sql-exclude
   (fn (_ ts)
-    (if (%sql-kw? ts "BETWEEN")
-      (let ((low (%sql-frame-end (rest ts))))
-        (if (%sql-kw? (rest low) "AND")
-          (let ((high (%sql-frame-end (rest (rest low)))))
-            (pair (list (first low) (first high)) (rest high)))
-          (%sql-near (rest low))))
-      (let ((low (%sql-frame-end ts)))
-        (pair (list (first low) 0) (rest low))))))
+    (let ((row (List find (fn (_ r) (not (null? (%sql-after ts (first r))))) %sql-excludes)))
+      (if (null? row) (%sql-near ts)
+        (pair (List second row) (first (%sql-after ts (first row))))))))
 
-; A window, TS after OVER's parenthesis: PARTITION BY, ORDER BY and ROWS,
-; each or none, as ((PARTITION ORDER FRAME) . tokens-left)
+; A window's frame of the kind MODE, TS after its word: BETWEEN two ends,
+; or one end, the other then the current row; then EXCLUDE
+(def %sql-frame
+  (fn (_ mode ts)
+    (let ((ends (if (%sql-kw? ts "BETWEEN")
+                  (let ((low (%sql-frame-end (rest ts))))
+                    (if (%sql-kw? (rest low) "AND")
+                      (let ((high (%sql-frame-end (rest (rest low)))))
+                        (pair (list (first low) (first high)) (rest high)))
+                      (%sql-near (rest low))))
+                  (let ((low (%sql-frame-end ts)))
+                    (pair (list (first low) (lit current)) (rest low))))))
+      (let ((exclude (%sql-clause (list "EXCLUDE") %sql-exclude (rest ends))))
+        (pair (%sql-frame-node mode (first ends) (first exclude)) (rest exclude))))))
+
+; (MODE LOW HIGH EXCLUDE), or nil for the frame a window has when none is
+; written
+(def %sql-frame-node
+  (fn (_ mode ends exclude)
+    (if (and (eq? mode (lit range)) (eq? (first ends) (lit unbounded))
+             (eq? (List second ends) (lit current)) (null? exclude))
+      ()
+      (list mode (first ends) (List second ends) exclude))))
+
+(def %sql-frame-words
+  (list (pair "ROWS" (lit rows)) (pair "RANGE" (lit range)) (pair "GROUPS" (lit groups))))
+
+; The frame at TS, nil when none is written, as (FRAME . tokens-left)
+(def %sql-framed
+  (fn (_ ts)
+    (let ((word (List find (fn (_ w) (%sql-word? ts (first w))) %sql-frame-words)))
+      (if (null? word) (pair () ts) (%sql-frame (rest word) (rest ts))))))
+
+; The name of the window a definition starts from, at TS, or nil
+(def %sql-window-base
+  (fn (_ ts)
+    (if (and (%sql-name? ts) (not (%sql-word? ts "PARTITION"))
+             (null? (List find (fn (_ w) (%sql-word? ts (first w))) %sql-frame-words)))
+      (List second (first ts))
+      ())))
+
+; A window, TS after its opening parenthesis: the name of another, PARTITION
+; BY, ORDER BY and a frame, each or none, as
+; ((PARTITION ORDER FRAME BASE) . tokens-left)
 (def %sql-window
   (fn (_ ts)
-    (let ((partition (%sql-clause (list "PARTITION" "BY")
-                       (fn (_ ts) (%sql-list %sql-expr ts)) ts)))
-      (let ((order (%sql-clause (list "ORDER" "BY") %sql-order (rest partition))))
-        (when (%sql-word? (rest order) "RANGE")
-          (error "Not implemented Error: a RANGE frame"))
-        (let ((frame (%sql-clause (list "ROWS") %sql-frame (rest order))))
-          (if (%sql-op? (rest frame) ")")
-            (pair (list (first partition) (first order) (first frame)) (rest (rest frame)))
-            (%sql-near (rest frame))))))))
+    (let ((base (%sql-window-base ts)))
+      (let ((partition (%sql-clause (list "PARTITION" "BY")
+                         (fn (_ ts) (%sql-list %sql-expr ts))
+                         (if (null? base) ts (rest ts)))))
+        (let ((order (%sql-clause (list "ORDER" "BY") %sql-order (rest partition))))
+          (let ((frame (%sql-framed (rest order))))
+            (if (%sql-op? (rest frame) ")")
+              (pair (list (first partition) (first order) (first frame) base)
+                    (rest (rest frame)))
+              (%sql-near (rest frame)))))))))
 
-; A call just read, as it is, or OVER the window that follows it
+; A call just read, as it is, or OVER the window that follows it: one
+; written out, or one a WINDOW clause names
 (def %sql-windowed
   (fn (_ call)
-    (if (and (%sql-word? (rest call) "OVER") (%sql-op? (rest (rest call)) "("))
-      (let ((window (%sql-window (rest (rest (rest call))))))
-        (pair (pair (lit over) (pair (first call) (first window))) (rest window)))
-      call)))
+    (match
+      ((not (%sql-word? (rest call) "OVER")) call)
+      ((%sql-op? (rest (rest call)) "(")
+        (let ((window (%sql-window (rest (rest (rest call))))))
+          (pair (pair (lit over) (pair (first call) (first window))) (rest window))))
+      ((%sql-name? (rest (rest call)))
+        (pair (list (lit over) (first call) () () () (List second (first (rest (rest call)))))
+              (rest (rest (rest call)))))
+      (#t call))))
+
+; One definition of a WINDOW clause, name AS ( window ), as
+; ((NAME PARTITION ORDER FRAME BASE) . tokens-left)
+(def %sql-window-def
+  (fn (_ ts)
+    (if (and (%sql-name? ts) (%sql-kw? (rest ts) "AS") (%sql-op? (rest (rest ts)) "("))
+      (let ((window (%sql-window (rest (rest (rest ts))))))
+        (pair (pair (List second (first ts)) (first window)) (rest window)))
+      (%sql-near ts))))
+
+; The definition NAME has among DEFS, or the error of none
+(def %sql-window-named
+  (fn (_ name defs)
+    (let ((found (List find (fn (_ d) (sql-same-name? (first d) name)) defs)))
+      (if (null? found) (error (Str8 str "Parser Error: window \"" name "\" does not exist"))
+        (rest found)))))
+
+; (PARTITION ORDER FRAME BASE) with its base window among DEFS read in: the
+; base's partition, its order or this one's when it has none, and this
+; one's frame or the base's
+(def %sql-window-merged
+  (fn (_ window defs)
+    (if (null? (List ref 3 window)) window
+      (let ((base (%sql-window-named (List ref 3 window) defs)))
+        (list (first base)
+              (if (null? (List second base)) (List second window) (List second base))
+              (if (null? (List third window)) (List third base) (List third window))
+              ())))))
+
+; A WINDOW clause's definitions, each with the ones before it read in
+(def %sql-window-defs
+  (fn (_ ts)
+    (let ((read (%sql-list %sql-window-def ts)))
+      (pair
+        (List reverse
+          (List fold
+            (fn (_ defs d)
+              (when (not (null? (List find (fn (_ o) (sql-same-name? (first o) (first d))) defs)))
+                (error (Str8 str "Parser Error: window \"" (first d) "\" is already defined")))
+              (pair (pair (first d) (%sql-window-merged (rest d) defs)) defs))
+            () (first read)))
+        (rest read)))))
+
+; TREE with every over node that names a window given that window's
+; clauses, from DEFS
+(def %sql-windows-named
+  (fn (self tree defs)
+    (match
+      ((not (pair? tree)) tree)
+      ((and (eq? (first tree) (lit over)) (not (null? (List ref 5 tree))))
+        (pair (lit over)
+          (pair (self (List second tree) defs)
+                (%sql-window-merged (rest (rest tree)) defs))))
+      (#t (pair (self (first tree) defs) (self (rest tree) defs))))))
 
 ; A call's arguments, TS after its opening parenthesis: none, a star, or
 ; expressions, after DISTINCT or not
@@ -781,16 +891,19 @@
 (def %sql-order (fn (_ ts) (%sql-list %sql-order-term ts)))
 
 ; The clauses after the tables, each nil when absent, as
-; (WHERE ORDER LIMIT OFFSET GROUP HAVING QUALIFY)
+; (WHERE ORDER LIMIT OFFSET GROUP HAVING QUALIFY WINDOWS), WINDOWS the
+; definitions of a WINDOW clause
 (def %sql-tail
   (fn (_ ts)
     (let ((where (%sql-clause (list "WHERE") %sql-expr ts)))
       (let ((group (%sql-clause (list "GROUP" "BY") %sql-group (rest where))))
         (let ((having (%sql-clause (list "HAVING") %sql-expr (rest group))))
-          (let ((qualify (%sql-clause (list "QUALIFY") %sql-expr (rest having))))
-            (let ((order (%sql-ordered (first where) (rest qualify))))
-              (pair (List append (first order) (list (first group) (first having) (first qualify)))
-                    (rest order)))))))))
+          (let ((windows (%sql-clause (list "WINDOW") %sql-window-defs (rest having))))
+            (let ((qualify (%sql-clause (list "QUALIFY") %sql-expr (rest windows))))
+              (let ((order (%sql-ordered (first where) (rest qualify))))
+                (pair (List append (first order)
+                        (list (first group) (first having) (first qualify) (first windows)))
+                      (rest order))))))))))
 
 ; ORDER BY, LIMIT and OFFSET, each nil when absent:
 ; ((WHERE ORDER LIMIT OFFSET) . tokens-left), WHERE the one given
@@ -814,10 +927,12 @@
 ; ITEMS is %sql-items' (ITEMS . DISTINCT), TAIL %sql-tail's list
 (def %sql-select-node
   (fn (_ items from tail)
-    (pair (lit select)
-      (pair (first items)
-        (pair from
-          (List append (List take 6 tail) (list (rest items) (List ref 6 tail))))))))
+    (%sql-windows-named
+      (pair (lit select)
+        (pair (first items)
+          (pair from
+            (List append (List take 6 tail) (list (rest items) (List ref 6 tail))))))
+      (List ref 7 tail))))
 
 ; SELECT items [FROM tables] and the clauses after
 (def %sql-select

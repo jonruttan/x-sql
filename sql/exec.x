@@ -25,6 +25,7 @@
 (import x/type/class)
 (import x/type/dict)
 (import x/num/tower)
+(import x/num/float)
 (import sql/words sql-lower sql-same-name?)
 (import sql/files sql-file-read sql-file-write sql-file-stem)
 (import sql/eval
@@ -447,36 +448,121 @@
           (List map (fn (_ i) (list i (+ start 1) dense (- end 1))) (List range start end))
           (self (rest runs) end (+ dense 1)))))))
 
-; A partition is (SCOPES PLACES FRAME COLUMNS OUTER): its rows' scopes in
-; the window's order, each row's place, and the window's frame.
+; Each of RUNS as (START . END), the indexes of its first row and its last
+(def %sql-run-ends
+  (fn (self runs start)
+    (if (null? runs) ()
+      (let ((end (+ start (List length (first runs)))))
+        (pair (pair start (- end 1)) (self (rest runs) end))))))
 
-; The index a frame starts at for the row at I
-(def %sql-frame-low
-  (fn (_ frame i)
-    (if (or (null? frame) (eq? (first frame) (lit unbounded))) 0
-      (Num max 0 (+ i (first frame))))))
+; A partition is (SCOPES PLACES FRAME COLUMNS OUTER KEYS TERMS RUNS): its
+; rows' scopes in the window's order, each row's place, the window's
+; frame, each row's values under the window's ORDER BY and that ORDER BY's
+; terms, and each run of peers as (START . END).
 
-; The index a frame ends at for the row of PLACE among N: with no frame
-; written, the row's last peer
-(def %sql-frame-high
-  (fn (_ frame place n)
-    (match
-      ((null? frame) (List ref 3 place))
-      ((eq? (List second frame) (lit unbounded)) (- n 1))
-      (#t (Num min (- n 1) (+ (first place) (List second frame)))))))
+; The count an end of a ROWS or GROUPS frame names, signed by its side
+(def %sql-frame-count
+  (fn (_ end)
+    (let ((v (sql-eval (List second end) ())))
+      (unless (and (List includes? (first v) %sql-whole-types) (not (sql-null? v))
+                   (>= (rest v) 0))
+        (error "Binder Error: a frame's count of rows is a whole number, not negative"))
+      (* (first end) (rest v)))))
+
+; The value a RANGE frame's END stands at for the row of SCOPE: the row's
+; own under the window's one ORDER BY term, less or more the end's
+; expression.  PRECEDING is toward the window's start, so it adds when
+; the term sorts downward.
+(def %sql-range-value
+  (fn (_ end scope part)
+    (let ((terms (List ref 6 part)))
+      (unless (and (not (null? terms)) (null? (rest terms)))
+        (error "Binder Error: RANGE frames must have only one ORDER BY expression"))
+      (sql-eval
+        (list (lit bin)
+              (if (eq? (< (first end) 0) (List second (first terms))) (lit add) (lit sub))
+              (first (first terms)) (List second end))
+        scope))))
+
+; How many of KEYS come before the first that PAST? is true of: KEYS are in
+; the window's order, so the index of the first row past a value
+(def %sql-keys-before
+  (fn (self keys past? n)
+    (if (or (null? keys) (past? (first keys))) n
+      (self (rest keys) past? (+ n 1)))))
+
+; One static method a kind of frame: the index END stands at for the row
+; of PLACE and SCOPE, HIGH whether it is the frame's last end.  An index
+; before the partition or after it is a frame's end all the same.
+(def-class SqlFrame ()
+  (static
+    (method rows (self end high place scope part)
+      (if (eq? end (lit current)) (first place)
+        (+ (first place) (%sql-frame-count end))))
+    (method groups (self end high place scope part)
+      (if (eq? end (lit current))
+        (if high (List ref 3 place) (- (List second place) 1))
+        (let ((runs (List ref 7 part))
+              (at (+ (- (List third place) 1) (%sql-frame-count end))))
+          (match
+            ((< at 0) (if high -1 0))
+            ((>= at (List length runs)) (List length (first part)))
+            (high (rest (List ref at runs)))
+            (#t (first (List ref at runs)))))))
+    (method range (self end high place scope part)
+      (if (eq? end (lit current))
+        (if high (List ref 3 place) (- (List second place) 1))
+        (let ((value (%sql-range-value end scope part)) (term (first (List ref 6 part))))
+          (if high
+            (- (%sql-keys-before (List ref 5 part)
+                 (fn (_ key) (> (%sql-key-order (first key) value term) 0)) 0)
+               1)
+            (%sql-keys-before (List ref 5 part)
+              (fn (_ key) (>= (%sql-key-order (first key) value term) 0)) 0)))))))
+
+; The frame a window has when none is written: from its partition's start
+; to the row's last peer
+(def %sql-frame-default (list (lit range) (lit unbounded) (lit current) ()))
+
+; The index one END of FRAME stands at, kept inside the partition's N rows
+; unless the frame is then empty
+(def %sql-frame-index
+  (fn (_ frame end high place scope part n)
+    (if (eq? end (lit unbounded)) (if high (- n 1) 0)
+      (let ((i ((class-static-ref SqlFrame (first frame)) SqlFrame end high place scope part)))
+        (if high (Num min (- n 1) i) (Num max 0 i))))))
+
+; SCOPES from the index LOW to HIGH, both counted; none when LOW is past HIGH
+(def %sql-slice
+  (fn (_ scopes low high)
+    (if (> low high) ()
+      (List take (+ (- high low) 1) (List drop low scopes)))))
+
+; The scopes from LOW to HIGH less what EXCLUDE leaves out around the row
+; of PLACE: the row, or its peers with or without it
+(def %sql-frame-members
+  (fn (_ scopes low high exclude place)
+    (if (null? exclude) (%sql-slice scopes low high)
+      (let ((i (first place))
+            (from (if (first exclude) (- (List second place) 1) (first place)))
+            (to (if (first exclude) (List ref 3 place) (first place))))
+        (List append
+          (%sql-slice scopes low (Num min high (- from 1)))
+          (if (and (List second exclude) (>= i low) (<= i high)) (%sql-slice scopes i i) ())
+          (%sql-slice scopes (Num max low (+ to 1)) high))))))
 
 ; The scopes in each row's frame, a list a row
 (def %sql-window-frames
   (fn (_ part)
-    (let ((scopes (first part)) (frame (List third part))
-          (n (List length (first part))))
+    (let ((scopes (first part)) (n (List length (first part)))
+          (frame (if (null? (List third part)) %sql-frame-default (List third part))))
       (List map
-        (fn (_ place)
-          (let ((low (%sql-frame-low frame (first place)))
-                (high (%sql-frame-high frame place n)))
-            (if (> low high) ()
-              (List take (+ (- high low) 1) (List drop low scopes)))))
-        (List second part)))))
+        (fn (_ place scope)
+          (%sql-frame-members scopes
+            (%sql-frame-index frame (List second frame) #f place scope part n)
+            (%sql-frame-index frame (List third frame) #t place scope part n)
+            (List ref 3 frame) place))
+        (List second part) scopes))))
 
 ; CALL has from LEAST to MOST arguments, or the error DuckDB gives, which
 ; names their types
@@ -502,15 +588,20 @@
 
 (def %sql-whole-types (list (lit integer) (lit bigint) (lit hugeint)))
 
+; The whole number CALL's argument at the index I is, nil for a NULL
+(def %sql-window-whole
+  (fn (_ call part i)
+    (let ((v (sql-eval (first (List drop i (List third call))) (first (first part)))))
+      (unless (or (List includes? (first v) %sql-whole-types) (eq? (first v) (lit null)))
+        (%sql-window-no-match call part))
+      (rest v))))
+
 ; How many rows lag and lead reach: their second argument, or 1
 (def %sql-window-offset
   (fn (_ call part)
-    (let ((args (List third call)))
-      (if (null? (rest args)) 1
-        (let ((v (sql-eval (List second args) (first (first part)))))
-          (unless (List includes? (first v) %sql-whole-types)
-            (%sql-window-no-match call part))
-          (if (sql-null? v) 0 (rest v)))))))
+    (if (null? (rest (List third call))) 1
+      (let ((n (%sql-window-whole call part 1)))
+        (if (null? n) 0 n)))))
 
 ; VALUES moved BY places toward the front, nil where no row comes
 (def %sql-window-moved
@@ -576,6 +667,47 @@
       (%sql-window-counted call part (fn (_ place) (+ (first place) 1))))
     (method rank (self call part) (%sql-window-counted call part (fn (_ place) (List second place))))
     (method dense_rank (self call part) (%sql-window-counted call part (fn (_ place) (List third place))))
+    (method percent_rank (self call part)
+      (%sql-window-arity call part 0 0)
+      (let ((n (List length (first part))))
+        (List map
+          (fn (_ place)
+            (pair (lit double)
+              (if (= n 1) (Float from 0)
+                (/ (Float from (- (List second place) 1)) (Float from (- n 1))))))
+          (List second part))))
+    (method cume_dist (self call part)
+      (%sql-window-arity call part 0 0)
+      (let ((n (List length (first part))))
+        (List map
+          (fn (_ place)
+            (pair (lit double) (/ (Float from (+ (List ref 3 place) 1)) (Float from n))))
+          (List second part))))
+    ; N buckets as near one size as the rows allow, the larger ones first
+    (method ntile (self call part)
+      (%sql-window-arity call part 1 1)
+      (let ((buckets (%sql-window-whole call part 0)) (n (List length (first part))))
+        (when (and (not (null? buckets)) (<= buckets 0))
+          (error "Invalid Input Error: Argument for ntile must be greater than zero"))
+        (List map
+          (fn (_ place)
+            (pair (lit bigint)
+              (if (null? buckets) ()
+                (let ((size (Num quotient n buckets)) (more (Num remainder n buckets))
+                      (i (first place)))
+                  (if (< i (* more (+ size 1)))
+                    (+ (Num quotient i (+ size 1)) 1)
+                    (+ more (Num quotient (- i (* more (+ size 1))) size) 1))))))
+          (List second part))))
+    (method nth_value (self call part)
+      (%sql-window-arity call part 2 2)
+      (let ((arg (first (List third call))) (nth (%sql-window-whole call part 1)))
+        (List map
+          (fn (_ members scope)
+            (if (or (null? nth) (< nth 1) (> nth (List length members)))
+              (pair (first (sql-eval arg scope)) ())
+              (sql-eval arg (first (List drop (- nth 1) members)))))
+          (%sql-window-frames part) (first part))))
     (method lag (self call part) (%sql-window-shifted call part -1))
     (method lead (self call part) (%sql-window-shifted call part 1))
     (method first_value (self call part) (%sql-window-framed call part first))
@@ -589,9 +721,12 @@
                       (List sort
                         (fn (_ a b) (< (%sql-keys-order (List second a) (List second b) terms) 0))
                         entries))))
-        (let ((part (list (List map (fn (_ e) (List third e)) sorted)
-                          (%sql-window-places (%sql-window-runs sorted terms) 0 1)
-                          (List ref 4 node) columns outer))
+        (let ((part (let ((runs (%sql-window-runs sorted terms)))
+                      (list (List map (fn (_ e) (List third e)) sorted)
+                            (%sql-window-places runs 0 1)
+                            (List ref 4 node) columns outer
+                            (List map (fn (_ e) (List second e)) sorted) terms
+                            (%sql-run-ends runs 0))))
               (window (class-static-ref SqlWindow
                         (Str8 ->sym (sql-lower (List second call))))))
           (List map pair
