@@ -39,14 +39,21 @@
         "FALSE" "GROUP" "ORDER" "HAVING" "LIMIT" "OFFSET" "UNION" "EXCEPT"
         "INTERSECT" "ON" "USING" "JOIN" "CASE" "WHEN" "THEN" "ELSE" "END"
         "IN" "DISTINCT" "ALL" "CREATE" "TABLE" "INTO" "WITH" "INNER" "LEFT"
-        "RIGHT" "FULL" "CROSS" "OUTER" "NATURAL" "BETWEEN" "LIKE" "ILIKE"))
+        "RIGHT" "FULL" "CROSS" "OUTER" "NATURAL" "BETWEEN" "LIKE" "ILIKE"
+        "QUALIFY"))
 
 ; The words the parser reads where the grammar asks for them and that are
 ; names everywhere else
 (def sql-words
   (list "INSERT" "VALUES" "DROP" "BY" "ASC" "DESC" "NULLS" "FIRST" "LAST"
         "CAST" "REPLACE" "IF" "EXISTS" "UPDATE" "SET" "DELETE" "COPY" "TO"
-        "FORMAT" "HEADER" "INTERVAL" "EXTRACT"))
+        "FORMAT" "HEADER" "INTERVAL" "EXTRACT" "OVER" "PARTITION" "ROWS"
+        "UNBOUNDED" "PRECEDING" "FOLLOWING" "CURRENT" "ROW"))
+
+; The functions that answer for a row among its window's rows, and are
+; nothing without an OVER
+(def sql-window-functions
+  (list "row_number" "rank" "dense_rank" "lag" "lead" "first_value" "last_value"))
 
 ; The functions that read a file as a table, and the format each reads it
 ; as: nil for the one its name's ending says
@@ -102,4 +109,4 @@
 
 (provide sql/words
   sql-lower sql-upper sql-same-name? sql-reserved sql-words sql-constants sql-ops sql-binary-ops sql-type-words
-  sql-aggregates sql-file-functions)
+  sql-aggregates sql-window-functions sql-file-functions)

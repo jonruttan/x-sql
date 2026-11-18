@@ -27,7 +27,8 @@
 (import x/type/dict)
 (import x/num/tower)
 (import x/num/float)
-(import sql/words sql-lower sql-same-name? sql-binary-ops sql-aggregates)
+(import sql/words sql-lower sql-same-name? sql-binary-ops sql-aggregates
+  sql-window-functions)
 (import sql/lex sql-lex)
 (import sql/time
   sql-micros-second sql-micros-minute sql-micros-hour sql-micros-day
@@ -916,6 +917,20 @@
 ; the top: a name no column here has is looked for there.
 (def sql-scope (fn (_ columns row group outer) (list columns row group outer)))
 
+; A scope has a fifth part once its statement's windows are answered: a
+; list of (NODE . VALUE), an over node and what it is for this row
+(def %sql-scope-windows
+  (fn (_ scope)
+    (let ((after (rest (rest (rest (rest scope))))))
+      (if (null? after) () (first after)))))
+
+; SCOPE with one more window answered, HELD its (NODE . VALUE)
+(def sql-scope-windowed
+  (fn (_ scope held)
+    (list (first scope) (List second scope) (List third scope)
+          (first (rest (rest (rest scope))))
+          (pair held (%sql-scope-windows scope)))))
+
 ; A subquery is run by the executor, which reads this module and so cannot
 ; be read by it: the executor leaves its function here
 (def %sql-hooks (Dict make))
@@ -1034,12 +1049,25 @@
     (and (eq? (first node) (lit call)) (%sql-aggregate? (List second node)))))
 
 ; NODE holds a call to an aggregate, at any depth of its own statement: a
-; subquery's aggregates are the subquery's
+; subquery's aggregates are the subquery's.  A call OVER a window is no
+; aggregate, though its arguments and its window may hold one.
 (def sql-aggregated?
   (fn (self node)
     (match
       ((not (pair? node)) #f)
       ((sql-aggregate-call? node) #t)
+      ((eq? (first node) (lit over))
+        (or (self (List third (List second node))) (self (rest (rest node)))))
+      ((or (eq? (first node) (lit subquery)) (eq? (first node) (lit exists))) #f)
+      ((eq? (first node) (lit in-query)) (self (List second node)))
+      (#t (List any? self node)))))
+
+; NODE holds a call OVER a window, at any depth of its own statement
+(def sql-windowed?
+  (fn (self node)
+    (match
+      ((not (pair? node)) #f)
+      ((eq? (first node) (lit over)) #t)
       ((or (eq? (first node) (lit subquery)) (eq? (first node) (lit exists))) #f)
       ((eq? (first node) (lit in-query)) (self (List second node)))
       (#t (List any? self node)))))
@@ -1069,10 +1097,13 @@
         (self (rest values) seen))
       (#t (self (rest values) (pair (first values) seen))))))
 
-; The type ARG has in a group, read off the group's first row
+; The type ARG has in a group, read off the group's first row, or off a
+; row of NULLs when the group is empty
 (def %sql-arg-type
   (fn (_ node scope)
-    (first (sql-eval (first (List third node)) (%sql-plain scope)))))
+    (let ((members (first (List third scope))))
+      (first (sql-eval (first (List third node))
+                       (if (null? members) (%sql-plain scope) (first members)))))))
 
 ; The least or the greatest of a group: PICK says whether a value takes the
 ; place of the one held
@@ -1148,6 +1179,20 @@
       (%sql-one-argument node)
       (%sql-extreme node scope (fn (_ c) (> c 0))))))
 
+; An aggregate CALL answered for the group of SCOPE, as a window's frame
+; is one.  A scalar function is refused, and a name nothing has.
+(def sql-window-aggregate
+  (fn (_ call scope)
+    (let ((name (Str8 ->sym (sql-lower (List second call)))))
+      (let ((aggregate (class-static-ref SqlAggregate name)))
+        (match
+          ((not (null? aggregate)) (aggregate SqlAggregate call scope))
+          ((null? (class-static-ref SqlFunction name))
+            (error (Str8 str "Catalog Error: Aggregate Function with name "
+                             (List second call) " does not exist!")))
+          (#t (error (Str8 str "Catalog Error: " (List second call)
+                               " is not an aggregate function"))))))))
+
 (def-class SqlNode ()
   (static
     (method int (self node scope)
@@ -1171,8 +1216,16 @@
     (method str (self node scope) (pair (lit varchar) (List second node)))
     (method bool (self node scope) (pair (lit boolean) (List second node)))
     (method null (self node scope) (pair (lit null) ()))
+    ; A window's value was worked out for the row before the row's items
+    ; are: it is held in the scope under its node
+    (method over (self node scope)
+      (let ((held (if (null? scope) ()
+                    (List find (fn (_ h) (same? (first h) node))
+                               (%sql-scope-windows scope)))))
+        (if (null? held) (error "Binder Error: Window functions are not supported here")
+          (rest held))))
     (method col (self node scope)
-      (if (null? scope)
+      (if (or (null? scope) (and (null? (first scope)) (null? (%sql-fourth scope))))
         (error (Str8 str "Binder Error: Referenced column \"" (List second node)
                          "\" was not found because the FROM clause is missing"))
         (let ((places (%sql-column-places (%sql-fourth node) (%sql-fifth node) (first scope) 0)))
@@ -1189,6 +1242,8 @@
           ((null? aggregate)
             (let ((function (class-static-ref SqlFunction
                               (Str8 ->sym (sql-lower (List second node))))))
+              (when (List includes? (sql-lower (List second node)) sql-window-functions)
+                (error "Binder Error: Window functions are not supported here"))
               (when (or (null? function) (List ref 3 node)
                         (List any? (fn (_ a) (eq? (first a) (lit star))) (List third node)))
                 (error (Str8 str "Catalog Error: Scalar Function with name "
@@ -1198,6 +1253,8 @@
                 node)))
           ((sql-aggregated? (List third node))
             (error "Binder Error: aggregate function calls cannot be nested"))
+          ((sql-windowed? (List third node))
+            (error "Binder Error: aggregate function calls cannot contain window function calls"))
           ((or (null? scope) (null? (List third scope)))
             (error "Binder Error: an aggregate has no group of rows here"))
           (#t (aggregate SqlAggregate node scope)))))
@@ -1341,6 +1398,7 @@
             (Str8 append " GROUP BY "
               (Str8 join ", " (List map sql-expr-name (List ref 7 stmt)))))
           (clause "HAVING" (List ref 8 stmt))
+          (clause "QUALIFY" (List ref 10 stmt))
           (if (null? (List ref 4 stmt)) ""
             (Str8 append " ORDER BY "
               (Str8 join ", "
@@ -1348,8 +1406,45 @@
           (clause "LIMIT" (List ref 5 stmt))
           (clause "OFFSET" (List ref 6 stmt))))))))
 
+; One end of a frame as a heading spells it, FAR the word for its side
+(def %sql-frame-end-text
+  (fn (_ end far)
+    (match
+      ((eq? end (lit unbounded)) (Str8 append "UNBOUNDED " far))
+      ((= end 0) "CURRENT ROW")
+      ((< end 0) (Str8 str (- 0 end) " PRECEDING"))
+      (#t (Str8 str end " FOLLOWING")))))
+
+; A term of an ORDER BY as a heading spells it
+(def %sql-term-text
+  (fn (_ term)
+    (Str8 append (sql-expr-name (first term))
+      (if (List second term) " DESC" "")
+      (if (null? (List third term)) ""
+        (if (eq? (List third term) (lit first)) " NULLS FIRST" " NULLS LAST")))))
+
+; The clauses of a window that are there, as a heading spells them
+(def %sql-window-texts
+  (fn (_ node)
+    (let ((partition (List third node)) (order (List ref 3 node)) (frame (List ref 4 node)))
+      (List append
+        (if (null? partition) ()
+          (list (Str8 append "PARTITION BY "
+                  (Str8 join ", " (List map sql-expr-name partition)))))
+        (if (null? order) ()
+          (list (Str8 append "ORDER BY " (Str8 join ", " (List map %sql-term-text order)))))
+        (if (null? frame) ()
+          (list (Str8 append "ROWS BETWEEN "
+                  (%sql-frame-end-text (first frame) "PRECEDING") " AND "
+                  (%sql-frame-end-text (List second frame) "FOLLOWING"))))))))
+
 (def-class SqlName ()
   (static
+    ; A count of rows is count() before an OVER, count_star() elsewhere
+    (method over (self node)
+      (let ((call (sql-expr-name (List second node))))
+        (Str8 append (if (str=? call "count_star()") "count()" call)
+                     " OVER (" (Str8 join " " (%sql-window-texts node)) ")")))
     (method int (self node) (Str8 str (List second node)))
     (method dec (self node) (List ref 4 node))
     (method dbl (self node) (List second node))
@@ -1631,5 +1726,6 @@
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
   sql-aggregated? sql-aggregate-call? sql-common-type sql-cast
+  sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type?)

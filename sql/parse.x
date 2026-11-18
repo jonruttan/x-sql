@@ -12,7 +12,7 @@
 ; %, and a sign.
 ;
 ; A statement, its head the name sql/exec's SqlStatement knows it by:
-;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET GROUP HAVING DISTINCT)
+;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET GROUP HAVING DISTINCT QUALIFY)
 ;       ITEMS   a list of (EXPR ALIAS), ALIAS nil or text; EXPR may be
 ;               (star QUALIFIER), every column, or every column of one table
 ;       FROM    nil, or a list: (TABLE ALIAS) first, then a
@@ -67,6 +67,13 @@
 ;   (in E LIST)  (between E LOW HIGH)
 ;   (like E PATTERN NEGATED ANY-CASE)
 ;   NOT IN and NOT BETWEEN are a (not ...) around these
+;   (over CALL PARTITION ORDER FRAME)   a call OVER a window: PARTITION a
+;                                   list of expressions, ORDER a list of
+;                                   terms as a SELECT's, FRAME nil or
+;                                   (LOW HIGH), each end the name
+;                                   unbounded or a count of rows from
+;                                   the current one, behind it when
+;                                   negative
 ;   (subquery SELECT)               a select statement in parentheses, for
 ;                                   its one value
 ;   (in-query E SELECT)             E IN (select statement)
@@ -368,9 +375,64 @@
             ((%sql-op? ts "(") (%sql-closed-expr (rest ts)))
             ((and (or (eq? (first (first ts)) (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
                   (%sql-op? (rest ts) "("))
-              (%sql-call (List second (first ts)) (rest (rest ts))))
+              (%sql-windowed (%sql-call (List second (first ts)) (rest (rest ts)))))
             ((%sql-name? ts) (%sql-column-name ts))
             (#t (%sql-near ts))))))))
+
+; One end of a ROWS frame: UNBOUNDED PRECEDING or FOLLOWING, CURRENT ROW,
+; or a count and PRECEDING or FOLLOWING, as (END . tokens-left)
+(def %sql-frame-end
+  (fn (_ ts)
+    (match
+      ((not (null? (%sql-after ts (list "UNBOUNDED" "PRECEDING"))))
+        (pair (lit unbounded) (rest (rest ts))))
+      ((not (null? (%sql-after ts (list "UNBOUNDED" "FOLLOWING"))))
+        (pair (lit unbounded) (rest (rest ts))))
+      ((not (null? (%sql-after ts (list "CURRENT" "ROW")))) (pair 0 (rest (rest ts))))
+      ((and (not (null? ts)) (eq? (first (first ts)) (lit num)) (= (List third (first ts)) 1)
+            (%sql-word? (rest ts) "PRECEDING"))
+        (pair (- 0 (%sql-digits (List second (first ts)) 0 (Str8 length (List second (first ts))) 0))
+              (rest (rest ts))))
+      ((and (not (null? ts)) (eq? (first (first ts)) (lit num)) (= (List third (first ts)) 1)
+            (%sql-word? (rest ts) "FOLLOWING"))
+        (pair (%sql-digits (List second (first ts)) 0 (Str8 length (List second (first ts))) 0)
+              (rest (rest ts))))
+      (#t (%sql-near ts)))))
+
+; A window's frame, TS after ROWS: BETWEEN two ends, or one end, the other
+; then the current row
+(def %sql-frame
+  (fn (_ ts)
+    (if (%sql-kw? ts "BETWEEN")
+      (let ((low (%sql-frame-end (rest ts))))
+        (if (%sql-kw? (rest low) "AND")
+          (let ((high (%sql-frame-end (rest (rest low)))))
+            (pair (list (first low) (first high)) (rest high)))
+          (%sql-near (rest low))))
+      (let ((low (%sql-frame-end ts)))
+        (pair (list (first low) 0) (rest low))))))
+
+; A window, TS after OVER's parenthesis: PARTITION BY, ORDER BY and ROWS,
+; each or none, as ((PARTITION ORDER FRAME) . tokens-left)
+(def %sql-window
+  (fn (_ ts)
+    (let ((partition (%sql-clause (list "PARTITION" "BY")
+                       (fn (_ ts) (%sql-list %sql-expr ts)) ts)))
+      (let ((order (%sql-clause (list "ORDER" "BY") %sql-order (rest partition))))
+        (when (%sql-word? (rest order) "RANGE")
+          (error "Not implemented Error: a RANGE frame"))
+        (let ((frame (%sql-clause (list "ROWS") %sql-frame (rest order))))
+          (if (%sql-op? (rest frame) ")")
+            (pair (list (first partition) (first order) (first frame)) (rest (rest frame)))
+            (%sql-near (rest frame))))))))
+
+; A call just read, as it is, or OVER the window that follows it
+(def %sql-windowed
+  (fn (_ call)
+    (if (and (%sql-word? (rest call) "OVER") (%sql-op? (rest (rest call)) "("))
+      (let ((window (%sql-window (rest (rest (rest call))))))
+        (pair (pair (lit over) (pair (first call) (first window))) (rest window)))
+      call)))
 
 ; A call's arguments, TS after its opening parenthesis: none, a star, or
 ; expressions, after DISTINCT or not
@@ -719,19 +781,27 @@
 (def %sql-order (fn (_ ts) (%sql-list %sql-order-term ts)))
 
 ; The clauses after the tables, each nil when absent, as
-; (WHERE ORDER LIMIT OFFSET GROUP HAVING)
+; (WHERE ORDER LIMIT OFFSET GROUP HAVING QUALIFY)
 (def %sql-tail
   (fn (_ ts)
     (let ((where (%sql-clause (list "WHERE") %sql-expr ts)))
       (let ((group (%sql-clause (list "GROUP" "BY") %sql-group (rest where))))
         (let ((having (%sql-clause (list "HAVING") %sql-expr (rest group))))
-          (let ((order (%sql-clause (list "ORDER" "BY") %sql-order (rest having))))
-            (let ((limit (%sql-clause (list "LIMIT") %sql-expr (rest order))))
-              (let ((offset (%sql-clause (list "OFFSET") %sql-expr (rest limit))))
-                (%sql-refuse-unread (rest offset))
-                (pair (list (first where) (first order) (first limit)
-                            (first offset) (first group) (first having))
-                      (rest offset))))))))))
+          (let ((qualify (%sql-clause (list "QUALIFY") %sql-expr (rest having))))
+            (let ((order (%sql-ordered (first where) (rest qualify))))
+              (pair (List append (first order) (list (first group) (first having) (first qualify)))
+                    (rest order)))))))))
+
+; ORDER BY, LIMIT and OFFSET, each nil when absent:
+; ((WHERE ORDER LIMIT OFFSET) . tokens-left), WHERE the one given
+(def %sql-ordered
+  (fn (_ where ts)
+    (let ((order (%sql-clause (list "ORDER" "BY") %sql-order ts)))
+      (let ((limit (%sql-clause (list "LIMIT") %sql-expr (rest order))))
+        (let ((offset (%sql-clause (list "OFFSET") %sql-expr (rest limit))))
+          (%sql-refuse-unread (rest offset))
+          (pair (list where (first order) (first limit) (first offset))
+                (rest offset)))))))
 
 ; The items after SELECT and whether DISTINCT came first:
 ; ((ITEMS . DISTINCT) . tokens-left)
@@ -746,7 +816,8 @@
   (fn (_ items from tail)
     (pair (lit select)
       (pair (first items)
-        (pair from (List append tail (list (rest items))))))))
+        (pair from
+          (List append (List take 6 tail) (list (rest items) (List ref 6 tail))))))))
 
 ; SELECT items [FROM tables] and the clauses after
 (def %sql-select
@@ -857,7 +928,8 @@
   (fn (_ stmt)
     (if (eq? (first stmt) (lit select))
       (list (list (lit select) (List second stmt) (List third stmt) (List ref 3 stmt)
-                  () () () (List ref 7 stmt) (List ref 8 stmt) (List ref 9 stmt))
+                  () () () (List ref 7 stmt) (List ref 8 stmt) (List ref 9 stmt)
+                  (List ref 10 stmt))
             (List ref 4 stmt) (List ref 5 stmt) (List ref 6 stmt))
       (list stmt () () ()))))
 
@@ -872,7 +944,7 @@
           node
           (list (lit select) (list (list (list (lit star) ()) ()))
                 (list (list node ()))
-                () (List second tail) (List third tail) (List ref 3 tail) () () #f))))))
+                () (List second tail) (List third tail) (List ref 3 tail) () () #f ()))))))
 
 ; Whether ALL follows a set operation's word, and the tokens after it or
 ; after DISTINCT: (ALL . tokens-left)

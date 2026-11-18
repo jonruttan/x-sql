@@ -22,7 +22,8 @@
 (import x/repl/lang)
 (import x/tool/syntax)
 (import sql/words
-  sql-lower sql-reserved sql-words sql-constants sql-type-words sql-aggregates)
+  sql-lower sql-reserved sql-words sql-constants sql-type-words sql-aggregates
+  sql-window-functions)
 (import sql/lex sql-lex)
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
 (import sql/base
@@ -188,7 +189,7 @@
     (let ((lower (str=? word (sql-lower word))))
       (List append
         (List map (fn (_ w) (if lower (sql-lower w) w)) (%sql-language-words))
-        sql-aggregates
+        sql-aggregates sql-window-functions
         (sql-table-names)
         (List flat-map
           (fn (_ table) (List map first (sql-table-columns table)))
