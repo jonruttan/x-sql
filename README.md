@@ -77,11 +77,13 @@ What is built:
 - **Groups.** `count`, `sum`, `avg`, `min` and `max`, with `DISTINCT` inside a
   call; `GROUP BY` an expression, an alias, a place in the list, or
   `ALL`; `HAVING`.
-- **Windows.** `row_number`, `rank`, `dense_rank`, `lag`, `lead`,
-  `first_value`, `last_value` and the aggregates, each `OVER` a window
-  with `PARTITION BY`, `ORDER BY` and a `ROWS` frame; `QUALIFY` keeps
-  the rows a window says. A window is answered for each row from the
-  rows of its frame, so a long partition is slow.
+- **Windows.** `row_number`, `rank`, `dense_rank`, `percent_rank`,
+  `cume_dist`, `ntile`, `lag`, `lead`, `first_value`, `last_value`,
+  `nth_value` and the aggregates, each `OVER` a window with `PARTITION
+  BY`, `ORDER BY` and a `ROWS`, `RANGE` or `GROUPS` frame, with
+  `EXCLUDE`; a `WINDOW` clause names windows; `QUALIFY` keeps the rows
+  a window says. A window is answered for each row from the rows of its
+  frame, so a long partition is slow.
 - **Results.** DuckDB's box, a column as wide as its widest text in
   terminal cells, headed by the alias, the column's name, or the
   expression spelled out. On a terminal the box and the types are dim,
@@ -121,9 +123,8 @@ answered differently.
 
 In this order:
 
-1. A WITH that reads itself, select statements in parentheses as the
-   sides of a set operation, and the rest of the windows: a `RANGE`
-   frame, a named `WINDOW`, `ntile` and `nth_value`.
+1. A WITH that reads itself, and select statements in parentheses as
+   the sides of a set operation.
 2. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
    ZONE, and the functions that go with them.
 3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and

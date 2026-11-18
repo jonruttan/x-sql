@@ -254,18 +254,6 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -c`, unless 
 └───────┴────────────────────────────────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────┘
 ```
 
-### a RANGE frame is not built yet
-
-DuckDB answers this one; x-sql says so.
-
-```x
-(sql "CREATE OR REPLACE TABLE t (id INTEGER, g VARCHAR, a INTEGER); INSERT INTO t VALUES (1,'x',1),(2,'x',2),(3,'x',2),(4,'y',6),(5,'y',NULL); SELECT sum(a) OVER (ORDER BY a RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t")
-```
----
-```output
-Not implemented Error: a RANGE frame
-```
-
 ## windows order
 
 ### a NULL is last in a window's order unless it says NULLS FIRST

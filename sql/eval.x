@@ -1411,9 +1411,18 @@
   (fn (_ end far)
     (match
       ((eq? end (lit unbounded)) (Str8 append "UNBOUNDED " far))
-      ((= end 0) "CURRENT ROW")
-      ((< end 0) (Str8 str (- 0 end) " PRECEDING"))
-      (#t (Str8 str end " FOLLOWING")))))
+      ((eq? end (lit current)) "CURRENT ROW")
+      (#t (Str8 append (sql-expr-name (List second end))
+                       (if (< (first end) 0) " PRECEDING" " FOLLOWING"))))))
+
+; A frame as a heading spells it
+(def %sql-frame-text
+  (fn (_ frame)
+    (Str8 append (Str8 upcase (Str8 str (first frame))) " BETWEEN "
+      (%sql-frame-end-text (List second frame) "PRECEDING") " AND "
+      (%sql-frame-end-text (List third frame) "FOLLOWING")
+      (if (null? (List ref 3 frame)) ""
+        (Str8 append " EXCLUDE " (List third (List ref 3 frame)))))))
 
 ; A term of an ORDER BY as a heading spells it
 (def %sql-term-text
@@ -1434,9 +1443,7 @@
         (if (null? order) ()
           (list (Str8 append "ORDER BY " (Str8 join ", " (List map %sql-term-text order)))))
         (if (null? frame) ()
-          (list (Str8 append "ROWS BETWEEN "
-                  (%sql-frame-end-text (first frame) "PRECEDING") " AND "
-                  (%sql-frame-end-text (List second frame) "FOLLOWING"))))))))
+          (list (%sql-frame-text frame)))))))
 
 (def-class SqlName ()
   (static
