@@ -145,6 +145,21 @@
     (list "drop" "A table gone."
       (list "DROP TABLE [IF EXISTS] name")
       (list "DROP TABLE IF EXISTS t;"))
+    (list "zones" "Moments, and the time zone that shows them."
+      (list "TIMESTAMPTZ '2026-11-17 12:34:56+00'    also TIMESTAMP WITH TIME ZONE"
+            "A moment is the same everywhere; the session's zone says what clock"
+            "shows it.  Text may end in an offset (+02, -05:30, Z) or a zone's"
+            "name (Europe/Paris); with neither it is on the session's clock."
+            "SET TimeZone = 'Asia/Tokyo'      SET TIME ZONE 'UTC'      RESET TimeZone"
+            "current_setting('TimeZone')      the session's zone, the system's at first"
+            "timestamp AT TIME ZONE 'zone'    the moment that zone's clock shows it"
+            "moment AT TIME ZONE 'zone'       the timestamp that zone's clock shows"
+            "A timestamp or a date beside a moment is read on the session's clock."
+            "moment + INTERVAL 1 DAY is the same time on the clock the next day,"
+            "whatever the clock did between; hours are time gone by."
+            "The zones are the system's, under /usr/share/zoneinfo.")
+      (list "SET TimeZone = 'America/New_York'; SELECT now();"
+            "SELECT TIMESTAMP '2026-07-15 09:00:00' AT TIME ZONE 'Asia/Tokyo';"))
     (list "types" "The types of values and columns."
       (list "TINYINT (INT1)         8-bit integer"
             "SMALLINT (INT2, SHORT) 16-bit integer"
@@ -159,6 +174,7 @@
             "VARCHAR (TEXT, STRING) text"
             "BOOLEAN (BOOL)         true or false"
             "DATE  TIME  TIMESTAMP  INTERVAL     see .help dates"
+            "TIMESTAMPTZ            a moment with a time zone; see .help zones"
             "A constant: 42 is an INTEGER or the wider type that holds it, and"
             "beside a TINYINT or SMALLINT one of those when it fits; 1.50 is a"
             "DECIMAL(3,2), 1e3 a DOUBLE, 'text' a VARCHAR.")
@@ -199,7 +215,7 @@
             "        strftime(value, format)     %Y %y %m %d %H %M %S %B %b %A %a %j"
             "        now() current_timestamp current_date today()"
             "A month added keeps the day of the month, or takes the month's last."
-            "There is no time zone: now() is UTC.")
+            "now() is a moment with a time zone: see .help zones.")
       (list "SELECT DATE '2026-01-31' + INTERVAL 1 MONTH, date_diff('day', d, current_date) FROM t;"
             "SELECT date_trunc('month', ts), count(*) FROM t GROUP BY ALL;"))
     (list "cast" "A value as another type."
