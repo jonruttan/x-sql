@@ -1000,6 +1000,77 @@
                 ((class-static-ref SqlSet (List second stmt)) SqlSet
                  (as-types left) (as-types right) (List third stmt))))))))
 
+; --- WITH --------------------------------------------------------------------
+
+; A FROM's ENTRY names the table KEY, a name in lower case
+(def %sql-entry-reads?
+  (fn (_ entry key)
+    (let ((table (first (if (symbol? (first entry)) (rest entry) entry))))
+      (and (not (pair? table)) (str=? (%sql-key table) key)))))
+
+; NODE has, at any depth, a SELECT whose FROM names the table KEY
+(def %sql-reads?
+  (fn (self node key)
+    (match
+      ((not (pair? node)) #f)
+      ((and (eq? (first node) (lit select))
+            (List any? (fn (_ entry) (%sql-entry-reads? entry key)) (List third node)))
+        #t)
+      (#t (or (self (first node) key) (self (rest node) key))))))
+
+; RESULT with COLUMNS for the names of its first columns
+(def %sql-renamed
+  (fn (_ result columns)
+    (let ((n (Num min (List length columns) (List length (first result)))))
+      (list (List append (List take n columns) (List drop n (first result)))
+            (List second result) (List third result)))))
+
+; ROWS, each value as the type of its place among TYPES
+(def %sql-rows-as
+  (fn (_ rows types)
+    (List map (fn (_ row) (List map (fn (_ v t) (pair t (sql-cast v t))) row types)) rows)))
+
+; The rows of a table that reads itself.  Its statement is a UNION: the
+; left side is answered once, and the right side again and again, each
+; time with the table holding only the rows the time before added, until
+; a time adds none.  The names and the types are the left side's.  Under
+; UNION without ALL a row is added once.
+(def %sql-recursive-result
+  (fn (_ table outer)
+    (let ((key (%sql-key (first table))) (stmt (List second table))
+          (seen (Dict make)))
+      (let ((start (%sql-renamed (%sql-query-result (List ref 3 stmt) outer) (List third table)))
+            (fresh (fn (_ rows)
+                     (if (List third stmt) rows
+                       (List filter
+                         (fn (_ row)
+                           (let ((k (%sql-values-key row)))
+                             (if (seen has? k) #f (do (seen set! k #t) #t))))
+                         rows)))))
+        ((fn (self added all)
+           (if (null? added) (list (first start) (List second start) all)
+             (do (%sql-withs set! key (list (first start) (List second start) added))
+                 (let ((step (%sql-query-result (List ref 4 stmt) outer)))
+                   (unless (= (List length (first step)) (List length (first start)))
+                     (error "Binder Error: Set operations can only apply to expressions with the same number of result columns"))
+                   (self (fresh (%sql-rows-as (List third step) (List second start)))
+                         (List append all added))))))
+         (fresh (List third start)) ())))))
+
+; What one table of a WITH holds.  A table that reads itself is a UNION
+; whose right side alone reads it, under WITH RECURSIVE.
+(def %sql-with-result
+  (fn (_ table recursive outer)
+    (let ((key (%sql-key (first table))) (stmt (List second table)))
+      (match
+        ((not (%sql-reads? stmt key))
+          (%sql-renamed (%sql-query-result stmt outer) (List third table)))
+        ((and recursive (eq? (first stmt) (lit set)) (eq? (List second stmt) (lit union))
+              (not (%sql-reads? (List ref 3 stmt) key)))
+          (%sql-recursive-result table outer))
+        (#t (error (Str8 str "Binder Error: Circular reference to CTE \"" (first table)
+                             "\", use WITH RECURSIVE to use recursive CTEs.")))))))
+
 (def %sql-query-result
   (fn (_ stmt outer)
     (if (eq? (first stmt) (lit set)) (%sql-set-result stmt outer)
@@ -1008,7 +1079,8 @@
         (let ((hidden (List map (fn (_ name) (%sql-withs get name)) names)))
           (List for-each
             (fn (_ t)
-              (%sql-withs set! (%sql-key (first t)) (%sql-query-result (List second t) outer)))
+              (%sql-withs set! (%sql-key (first t))
+                          (%sql-with-result t (List ref 3 stmt) outer)))
             (List second stmt))
           (let ((result (%sql-query-result (List third stmt) outer)))
             (List for-each
