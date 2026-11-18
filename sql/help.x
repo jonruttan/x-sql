@@ -47,9 +47,12 @@
             "Without ALL a row is there once.  The names are the first"
             "statement's, and each column takes a type both sides go into."
             "INTERSECT joins tighter than UNION and EXCEPT.  An ORDER BY, LIMIT"
-            "or OFFSET after the last statement is the whole's.")
+            "or OFFSET after the last statement is the whole's."
+            "A statement in parentheses is a side read before its neighbours,"
+            "and keeps its own ORDER BY and LIMIT.")
       (list "SELECT a FROM t UNION SELECT a FROM u ORDER BY a LIMIT 10;"
-            "SELECT a FROM t EXCEPT SELECT a FROM u;"))
+            "SELECT a FROM t EXCEPT SELECT a FROM u;"
+            "SELECT a FROM t UNION ALL (SELECT a FROM u ORDER BY a LIMIT 3);"))
     (list "group" "A row for a group of rows."
       (list "GROUP BY expression | alias | place in the list, ..."
             "GROUP BY ALL    every item that holds no aggregate"
@@ -112,13 +115,17 @@
             "value [NOT] IN (SELECT ...)"
             "[NOT] EXISTS (SELECT ...)"
             "FROM (SELECT ...) [[AS] alias]  a table"
-            "WITH name AS (SELECT ...), ... SELECT ...   tables by name"
+            "WITH name [(column, ...)] AS (SELECT ...), ... SELECT ...   tables by name"
+            "WITH RECURSIVE name AS (SELECT ... UNION [ALL] SELECT ... FROM name ...)"
+            "    a table that reads itself: the first side once, then the second"
+            "    over the rows last added, until none is; UNION adds a row once"
             "INSERT INTO table [(column, ...)] SELECT ..."
             "CREATE [OR REPLACE] TABLE name AS SELECT ..."
             "A subquery reads the row it is answered for: a name none of its"
             "own tables has is the outer statement's.")
       (list "SELECT a, (SELECT count(*) FROM u WHERE u.a > t.a) FROM t;"
-            "WITH big AS (SELECT * FROM t WHERE a > 1) SELECT count(*) FROM big;"))
+            "WITH big AS (SELECT * FROM t WHERE a > 1) SELECT count(*) FROM big;"
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 9) FROM n;"))
     (list "files" "CSV and JSON files as tables, and tables as files."
       (list "FROM 'people.csv'               a file's name is a table"
             "FROM 'people.json'              an array of objects, or an object a line"

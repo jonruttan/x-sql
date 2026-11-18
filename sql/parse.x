@@ -32,8 +32,12 @@
 ;                               statement
 ;   (update TABLE SETS WHERE)   SETS a list of (COLUMN EXPR)
 ;   (delete TABLE WHERE)
-;   (with TABLES SELECT)        TABLES a list of (NAME SELECT): each a table
-;                               for the ones after it and for SELECT
+;   (with TABLES SELECT RECURSIVE)
+;                               TABLES a list of (NAME SELECT COLUMNS):
+;                               each a table for the ones after it and
+;                               for SELECT, COLUMNS the names it gives
+;                               its first columns; RECURSIVE whether a
+;                               table may read itself
 ;   (set OP ALL LEFT RIGHT)     OP union, intersect or except, of two select
 ;                               statements; ALL whether rows that repeat
 ;                               are kept.  An ORDER BY, LIMIT or OFFSET
@@ -1035,7 +1039,19 @@
       ((%sql-kw? ts "SELECT") (%sql-select (rest ts)))
       ((%sql-kw? ts "FROM") (%sql-from-first (rest ts)))
       ((%sql-kw? ts "WITH") (%sql-with (rest ts)))
+      ((and (%sql-op? ts "(") (or (%sql-query? (rest ts)) (%sql-op? (rest ts) "(")))
+        (let ((q (%sql-closed-query (rest ts))))
+          (pair (%sql-enclosed (first q)) (rest q))))
       (#t (%sql-near ts)))))
+
+; A select statement that was written in parentheses, as the one table of
+; a SELECT *: what it ends with, its ORDER BY and LIMIT, stays its own
+; under a set operation
+(def %sql-enclosed
+  (fn (_ stmt)
+    (list (lit select) (list (list (list (lit star) ()) ()))
+          (list (list stmt ()))
+          () () () () () () #f ())))
 
 ; A select statement without its ORDER BY, LIMIT and OFFSET, and those:
 ; (STATEMENT ORDER LIMIT OFFSET).  Only a SELECT has them to give.
@@ -1089,27 +1105,49 @@
   (fn (_ ts)
     (%sql-set-chain %sql-simple-query (list (list "INTERSECT" (lit intersect))) ts)))
 
-; A select statement, or several under set operations
+; A select statement, or several under set operations.  An ORDER BY, LIMIT
+; or OFFSET still unread is after a statement in parentheses, and is the
+; whole's.
 (def %sql-query
   (fn (_ ts)
-    (%sql-set-chain %sql-intersections
-      (list (list "UNION" (lit union)) (list "EXCEPT" (lit except)))
-      ts)))
+    (let ((q (%sql-set-chain %sql-intersections
+               (list (list "UNION" (lit union)) (list "EXCEPT" (lit except)))
+               ts)))
+      (let ((tail (%sql-ordered () (rest q))))
+        (if (same? (rest tail) (rest q)) q
+          (pair (list (lit select) (list (list (list (lit star) ()) ()))
+                      (list (list (first q) ()))
+                      () (List second (first tail)) (List third (first tail))
+                      (List ref 3 (first tail)) () () #f ())
+                (rest tail)))))))
 
-; One table of a WITH: name AS (select statement)
+; The names in parentheses at TS, or none: (NAMES . tokens-left)
+(def %sql-with-columns
+  (fn (_ ts)
+    (if (%sql-op? ts "(")
+      (let ((names (%sql-list (fn (_ ts) (pair (%sql-name ts) (rest ts))) (rest ts))))
+        (if (%sql-op? (rest names) ")") (pair (first names) (rest (rest names)))
+          (%sql-near (rest names))))
+      (pair () ts))))
+
+; One table of a WITH: name [(column, ...)] AS (select statement), as
+; ((NAME STATEMENT COLUMNS) . tokens-left)
 (def %sql-with-table
   (fn (_ ts)
     (let ((name (%sql-name ts)))
-      (if (and (%sql-kw? (rest ts) "AS") (%sql-op? (rest (rest ts)) "("))
-        (let ((q (%sql-closed-query (rest (rest (rest ts))))))
-          (pair (list name (first q)) (rest q)))
-        (%sql-near (rest ts))))))
+      (let ((columns (%sql-with-columns (rest ts))))
+        (if (and (%sql-kw? (rest columns) "AS") (%sql-op? (rest (rest columns)) "("))
+          (let ((q (%sql-closed-query (rest (rest (rest columns))))))
+            (pair (list name (first q) (first columns)) (rest q)))
+          (%sql-near (rest columns)))))))
 
+; (with TABLES STATEMENT RECURSIVE), TS after WITH
 (def %sql-with
   (fn (_ ts)
-    (let ((tables (%sql-list %sql-with-table ts)))
-      (let ((q (%sql-query (rest tables))))
-        (pair (list (lit with) (first tables) (first q)) (rest q))))))
+    (let ((recursive (and (%sql-word? ts "RECURSIVE") (%sql-name? (rest ts)))))
+      (let ((tables (%sql-list %sql-with-table (if recursive (rest ts) ts))))
+        (let ((q (%sql-query (rest tables))))
+          (pair (list (lit with) (first tables) (first q) recursive) (rest q)))))))
 
 ; One SET of an UPDATE: column = expression
 (def %sql-set
@@ -1191,6 +1229,8 @@
     (match
       ((%sql-word? ts "COPY") (%sql-copy (rest ts)))
       ((%sql-query? ts) (%sql-query ts))
+      ((and (%sql-op? ts "(") (or (%sql-query? (rest ts)) (%sql-op? (rest ts) "(")))
+        (%sql-query ts))
       ((%sql-kw? ts "CREATE") (%sql-create (rest ts)))
       ((%sql-word? ts "INSERT") (%sql-insert (rest ts)))
       ((%sql-word? ts "UPDATE") (%sql-update (rest ts)))

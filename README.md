@@ -65,7 +65,9 @@ What is built:
   `NATURAL JOIN`, inner and left, the shared columns shown once; a table
   joined to itself under two aliases.
 - **Set operations.** `UNION`, `INTERSECT` and `EXCEPT`, each with or
-  without `ALL`; a trailing `ORDER BY` and `LIMIT` are the whole's.
+  without `ALL`; a trailing `ORDER BY` and `LIMIT` are the whole's. A
+  select statement in parentheses is a side, with an `ORDER BY` and
+  `LIMIT` of its own.
 - **Files.** `FROM 'people.csv'` and `FROM 'people.json'`: a CSV or JSON
   file is a table, its columns' types found from its values as DuckDB
   finds them. `read_csv` and `read_json`. `COPY table TO 'file'`, `COPY
@@ -73,7 +75,12 @@ What is built:
   JSON, an object a line.
 - **Subqueries.** A select statement in parentheses for its one value,
   after `[NOT] IN`, after `[NOT] EXISTS`, and as a table of a `FROM`;
-  `WITH name AS (...)`. A subquery reads the row it is answered for.
+  `WITH name AS (...)`, with the columns named after the name if
+  wanted. A subquery reads the row it is answered for.
+- **Recursion.** `WITH RECURSIVE`: a table that is a `UNION` or `UNION
+  ALL` whose second side reads the table itself, answered over the rows
+  last added until none is. Nothing stops a recursion that never ends
+  but the memory it is given.
 - **Groups.** `count`, `sum`, `avg`, `min` and `max`, with `DISTINCT` inside a
   call; `GROUP BY` an expression, an alias, a place in the list, or
   `ALL`; `HAVING`.
@@ -123,16 +130,14 @@ answered differently.
 
 In this order:
 
-1. A WITH that reads itself, and select statements in parentheses as
-   the sides of a set operation.
-2. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
+1. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
    ZONE, and the functions that go with them.
-3. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
+2. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
    with them the nested values of a JSON file; a CSV's separator and its
    other options; Parquet.
-4. The prompt: coloured values in a result, paging a long one, a help
+3. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
-5. The servers the rest of the way: TLS with MySQL and MariaDB, once
+4. The servers the rest of the way: TLS with MySQL and MariaDB, once
    the platform's TLS answers a request for a client certificate, and
    with it MySQL's whole-password sign-in, which a MySQL 8 server asks of
    a user it has not cached; a certificate authority of one's own for
