@@ -114,6 +114,7 @@
         (list "DECIMAL" (lit decimal) "DECIMAL") (list "NUMERIC" (lit decimal) "DECIMAL")
         (list "DATE" (lit date) "DATE") (list "TIME" (lit time) "TIME")
         (list "TIMESTAMP" (lit timestamp) "TIMESTAMP") (list "DATETIME" (lit timestamp) ())
+        (list "TIMESTAMPTZ" (lit timestamptz) ())
         (list "INTERVAL" (lit interval) "INTERVAL")))
 
 ; The functions that answer one value for a group of rows

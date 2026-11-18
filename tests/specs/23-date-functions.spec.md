@@ -249,17 +249,15 @@ Conversion Error: extract specifier "fortnight" not recognized
 
 ### the clock: today is a DATE and now a moment after 2026 began
 
-DuckDB answers now() as a TIMESTAMP WITH TIME ZONE; here it is a TIMESTAMP, in UTC.  The expectation is written by hand.
-
 ```x
 (sql "SELECT typeof(current_date) AS a, typeof(today()) AS b, typeof(now()) AS c, current_date >= DATE '2026-01-01' AS d, now() > TIMESTAMP '2026-01-01' AS e")
 ```
 ---
 ```output
-┌─────────┬─────────┬───────────┬─────────┬─────────┐
-│    a    │    b    │     c     │    d    │    e    │
-│ varchar │ varchar │  varchar  │ boolean │ boolean │
-├─────────┼─────────┼───────────┼─────────┼─────────┤
-│ DATE    │ DATE    │ TIMESTAMP │ true    │ true    │
-└─────────┴─────────┴───────────┴─────────┴─────────┘
+┌─────────┬─────────┬──────────────────────────┬─────────┬─────────┐
+│    a    │    b    │            c             │    d    │    e    │
+│ varchar │ varchar │         varchar          │ boolean │ boolean │
+├─────────┼─────────┼──────────────────────────┼─────────┼─────────┤
+│ DATE    │ DATE    │ TIMESTAMP WITH TIME ZONE │ true    │ true    │
+└─────────┴─────────┴──────────────────────────┴─────────┴─────────┘
 ```

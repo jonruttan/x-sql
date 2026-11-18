@@ -32,11 +32,18 @@ What is built:
   DOUBLE and the 32-bit REAL, each shown in the fewest digits that read
   back as it; VARCHAR; BOOLEAN; NULL.
 - **Dates and times.** DATE, TIME, TIMESTAMP to the microsecond, and
-  INTERVAL, with no time zone. A date and a count of days, a moment and
+  INTERVAL. A date and a count of days, a moment and
   an interval, two moments apart; a month added keeps the day or takes
   the month's last. `year month day hour minute second quarter
   dayofweek dayofyear date_part EXTRACT date_trunc date_diff dayname
   monthname last_day make_date strftime now current_date today`.
+- **Time zones.** TIMESTAMP WITH TIME ZONE, or TIMESTAMPTZ: a moment,
+  shown on the session's clock with its offset. Text may end in an
+  offset or a zone's name. `SET TimeZone = 'Europe/Paris'` names the
+  session's zone, the system's to begin with; `AT TIME ZONE` reads a
+  timestamp on a zone's clock or shows a moment on one. A day added is
+  the same time on the clock the next day. `now()` is a moment. The
+  zones are the system's, read from `/usr/share/zoneinfo` (`sql/zone.x`).
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one, a REAL when either is one and neither a
@@ -133,13 +140,12 @@ answered differently.
 
 In this order:
 
-1. TIMESTAMP WITH TIME ZONE, and the functions that go with it.
-2. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
+1. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
    with them the nested values of a JSON file; a CSV's separator and its
    other options; Parquet.
-3. The prompt: coloured values in a result, paging a long one, a help
+2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
-4. The servers the rest of the way: TLS with MySQL and MariaDB, once
+3. The servers the rest of the way: TLS with MySQL and MariaDB, once
    the platform's TLS answers a request for a client certificate, and
    with it MySQL's whole-password sign-in, which a MySQL 8 server asks of
    a user it has not cached; a certificate authority of one's own for
@@ -175,9 +181,9 @@ No script runs against Oracle's MySQL.
 - Every row of a result is shown; DuckDB cuts a long one to forty rows.
 - `//` and `%` take integers only; DuckDB's `//` on a decimal or a double
   is its `/`.
-- There is no time zone: `now()` is a TIMESTAMP in UTC, where DuckDB's is
-  a TIMESTAMP WITH TIME ZONE. A time's minutes and seconds past 59 are
-  not refused.
+- A time's minutes and seconds past 59 are not refused.
+- A time zone is one the system has a file for; DuckDB carries its own.
+  `strftime` has no `%Z`, and there is no TIME WITH TIME ZONE.
 - `round` takes one argument; `LIKE` has no `ESCAPE`; `ILIKE` folds
   ASCII letters only.
 - Groups come in the order their keys first appear; DuckDB promises no

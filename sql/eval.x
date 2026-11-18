@@ -39,6 +39,8 @@
   sql-interval-of sql-interval-add sql-interval-times sql-interval-negated
   sql-timestamp-plus sql-micros-interval sql-interval-micros sql-day-names
   sql-month-names sql-day-of-year sql-moment-diff sql-moment-trunc)
+(import sql/zone
+  sql-zone-find sql-zone-offset sql-zone-utc sql-zone-name sql-zone-session)
 (import sql/number
   sql-pow10 sql-double-text sql-double-of sql-double-scaled sql-real-text
   sql-real-of
@@ -93,6 +95,7 @@
         (list (lit date) "DATE" "date")
         (list (lit time) "TIME" "time")
         (list (lit timestamp) "TIMESTAMP" "timestamp")
+        (list (lit timestamptz) "TIMESTAMP WITH TIME ZONE" "timestamp with time zone")
         (list (lit interval) "INTERVAL" "interval")
         (list (lit null) "NULL" "\"null\"")))
 
@@ -188,6 +191,44 @@
       (#t (let ((t (%sql-holding a b %sql-signed-types)))
             (if (null? t) (lit hugeint) t))))))
 
+; --- moments in a zone -------------------------------------------------------
+
+; A TIMESTAMP WITH TIME ZONE is a moment, in microseconds of UTC; the
+; session's zone says what clock shows it.
+
+; ZONE's offset at the moment MICROS, in seconds east
+(def %sql-zone-seconds
+  (fn (_ micros zone) (sql-zone-offset zone (sql-floor-div micros sql-micros-second))))
+
+; What ZONE's clock shows at the moment MICROS, as a moment of a clock
+; with no zone
+(def %sql-zone-local
+  (fn (_ micros zone) (+ micros (* (%sql-zone-seconds micros zone) sql-micros-second))))
+
+; The moment ZONE's clock shows LOCAL
+(def %sql-zone-global
+  (fn (_ local zone)
+    (+ (* (sql-zone-utc zone (sql-floor-div local sql-micros-second)) sql-micros-second)
+       (sql-floor-mod local sql-micros-second))))
+
+(def %sql-two-digits
+  (fn (_ n) (if (< n 10) (Str8 str "0" n) (Str8 str n))))
+
+; An offset as a moment shows it: a sign, the hours, and the minutes when
+; there are any
+(def %sql-offset-text
+  (fn (_ seconds)
+    (let ((minutes (Num quotient (if (< seconds 0) (- 0 seconds) seconds) 60)))
+      (Str8 append (if (< seconds 0) "-" "+")
+                   (%sql-two-digits (Num quotient minutes 60))
+                   (if (= (Num remainder minutes 60) 0) ""
+                     (Str8 append ":" (%sql-two-digits (Num remainder minutes 60))))))))
+
+(def %sql-zoned-text
+  (fn (_ micros zone)
+    (Str8 append (sql-timestamp-text (%sql-zone-local micros zone))
+                 (%sql-offset-text (%sql-zone-seconds micros zone)))))
+
 ; A value as a result shows it
 (def sql-value-text
   (fn (_ v)
@@ -200,6 +241,7 @@
         ((%sql-real? t) (sql-real-text x))
         ((eq? t (lit date)) (sql-date-text x))
         ((eq? t (lit timestamp)) (sql-timestamp-text x))
+        ((eq? t (lit timestamptz)) (%sql-zoned-text x (sql-zone-session)))
         ((eq? t (lit time)) (sql-clock-text x))
         ((eq? t (lit interval)) (sql-interval-text x))
         ((%sql-decimal? t) (sql-decimal-text x (List second t) (List third t)))
@@ -243,6 +285,8 @@
       (match
         ((null? known) (lit null))
         ((List all? (fn (_ t) (equal? t (first known))) known) (first known))
+        ((and (List all? %sql-moment-type? known) (List any? %sql-zoned? known))
+          (lit timestamptz))
         ((not (List all? %sql-numeric? known))
           (let ((other (List find (fn (_ t) (not (equal? t (first known)))) known)))
             (error (Str8 str "Binder Error: Cannot mix values of type "
@@ -355,15 +399,34 @@
 
 ; --- dates and times in arithmetic --------------------------------------------
 
-(def %sql-temporal-types (list (lit date) (lit time) (lit timestamp) (lit interval)))
+(def %sql-temporal-types
+  (list (lit date) (lit time) (lit timestamp) (lit timestamptz) (lit interval)))
+(def %sql-zoned? (fn (_ t) (eq? t (lit timestamptz))))
 (def %sql-temporal? (fn (_ t) (List includes? t %sql-temporal-types)))
 
-; A date or a timestamp as a moment, in microseconds
+; A date or a timestamp as a moment of a clock with no zone, in
+; microseconds: for a timestamp with a zone, what the session's clock shows
 (def %sql-moment
-  (fn (_ v) (if (eq? (first v) (lit date)) (* (rest v) sql-micros-day) (rest v))))
+  (fn (_ v)
+    (match
+      ((eq? (first v) (lit date)) (* (rest v) sql-micros-day))
+      ((%sql-zoned? (first v)) (%sql-zone-local (rest v) (sql-zone-session)))
+      (#t (rest v)))))
 
 (def %sql-moment-type?
-  (fn (_ t) (or (eq? t (lit date)) (eq? t (lit timestamp)))))
+  (fn (_ t) (or (eq? t (lit date)) (eq? t (lit timestamp)) (%sql-zoned? t))))
+
+; A moment with a zone and an interval: the months and days are counted on
+; the session's clock, so a day on is the same time the next day whatever
+; the clock did between, and the rest is time gone by
+(def %sql-zoned-plus
+  (fn (_ micros interval)
+    (let ((zone (sql-zone-session)))
+      (+ (%sql-zone-global
+           (sql-timestamp-plus (%sql-zone-local micros zone)
+                               (list (first interval) (List second interval) 0))
+           zone)
+         (List third interval)))))
 
 ; T, or NULL of it when either operand is NULL, else what COMPUTE answers
 (def %sql-unless-null
@@ -374,7 +437,9 @@
 ; and * of an interval by an integer.  A date and a count of days is a
 ; date; two dates apart are days; a date or a timestamp and an interval is
 ; a timestamp; two moments apart are an interval; a time and an interval
-; is a time, on the clock of one day.
+; is a time, on the clock of one day.  A moment with a zone and an
+; interval is a moment with a zone, and two moments apart are told on the
+; session's clock, as DuckDB tells them.
 (def %sql-temporal-arith
   (fn (_ sign a b)
     (let ((ta (first a)) (tb (first b)) (plus (str=? sign "+")) (minus (str=? sign "-")))
@@ -386,6 +451,13 @@
           (%sql-unless-null (lit date) a b (fn (_) (+ (rest a) (rest b)))))
         ((and (eq? ta (lit date)) (eq? tb (lit date)) minus)
           (%sql-unless-null (lit bigint) a b (fn (_) (- (rest a) (rest b)))))
+        ((and (%sql-zoned? ta) (eq? tb (lit interval)) (or plus minus))
+          (%sql-unless-null (lit timestamptz) a b
+            (fn (_) (%sql-zoned-plus (rest a)
+                      (if plus (rest b) (sql-interval-negated (rest b)))))))
+        ((and (eq? ta (lit interval)) (%sql-zoned? tb) plus)
+          (%sql-unless-null (lit timestamptz) a b
+            (fn (_) (%sql-zoned-plus (rest b) (rest a)))))
         ((and (%sql-moment-type? ta) (eq? tb (lit interval)) (or plus minus))
           (%sql-unless-null (lit timestamp) a b
             (fn (_) (sql-timestamp-plus (%sql-moment a)
@@ -476,6 +548,11 @@
                 (if (< sx sy) -1 (if (= sx sy) 0 1))))))
         ((and (eq? ta (lit varchar)) (eq? tb (lit varchar)))
           (if (Str8 <? x y) -1 (if (Str8 =? x y) 0 1)))
+        ((and (or (%sql-zoned? ta) (%sql-zoned? tb))
+              (or (%sql-moment-type? ta) (eq? ta (lit varchar)))
+              (or (%sql-moment-type? tb) (eq? tb (lit varchar))))
+          (let ((mx (sql-cast a (lit timestamptz))) (my (sql-cast b (lit timestamptz))))
+            (if (< mx my) -1 (if (= mx my) 0 1))))
         ((and (%sql-temporal? ta) (eq? tb (lit varchar))) (%sql-order a (%sql-as b ta)))
         ((and (eq? ta (lit varchar)) (%sql-temporal? tb)) (%sql-order (%sql-as a tb) b))
         ((and (%sql-moment-type? ta) (%sql-moment-type? tb))
@@ -695,7 +772,7 @@
     (match
       ((eq? (first v) (lit date)) 0)
       ((eq? (first v) (lit interval)) (List third (rest v)))
-      (#t (sql-floor-mod (rest v) sql-micros-day)))))
+      (#t (sql-floor-mod (%sql-moment v) sql-micros-day)))))
 
 ; ARGS are dates or timestamps, or NULL constants, or NAME has no such form
 (def %sql-moments
@@ -783,6 +860,12 @@
 
 ; The functions of one row's values.  A function is a static method named
 ; in lower case, taking its arguments' values and its node.
+; The zone NAME names, or the error of KIND that there is none
+(def %sql-zone-named
+  (fn (_ name kind)
+    (let ((zone (sql-zone-find name)))
+      (if (null? zone) (error (Str8 str kind " Error: Unknown TimeZone '" name "'!")) zone))))
+
 (def-class SqlFunction ()
   (static
     (method lower (self args node)
@@ -935,9 +1018,11 @@
       (%sql-arity "date_trunc" args (list 2))
       (%sql-texts "date_trunc" (list (first args)))
       (%sql-moments "date_trunc" args (rest args))
-      (pair (lit timestamp)
-        (if (%sql-any-null? args) ()
-          (sql-moment-trunc (rest (first args)) (%sql-moment (List second args))))))
+      (let ((zoned (%sql-zoned? (first (List second args)))))
+        (pair (if zoned (lit timestamptz) (lit timestamp))
+          (if (%sql-any-null? args) ()
+            (let ((start (sql-moment-trunc (rest (first args)) (%sql-moment (List second args)))))
+              (if zoned (%sql-zone-global start (sql-zone-session)) start))))))
     ; How many of a unit begin between two moments
     (method date_diff (self args node)
       (%sql-arity "date_diff" args (list 3))
@@ -987,14 +1072,35 @@
       (pair (lit varchar)
         (if (%sql-any-null? args) ()
           (%sql-strftime (rest (List second args)) 0 (%sql-moment (first args))))))
-    ; The clock's time, in UTC: there is no time zone here
+    ; The clock's time, a moment the session's zone shows
     (method now (self args node)
       (%sql-arity "now" args (list 0))
-      (pair (lit timestamp) (* (Sys now) sql-micros-second)))
+      (pair (lit timestamptz) (* (Sys now) sql-micros-second)))
     (method current_timestamp (self args node) (SqlFunction now args node))
     (method current_date (self args node)
       (%sql-arity "current_date" args (list 0))
-      (pair (lit date) (sql-floor-div (* (Sys now) sql-micros-second) sql-micros-day)))
+      (pair (lit date)
+            (sql-floor-div (%sql-zone-local (* (Sys now) sql-micros-second) (sql-zone-session))
+                           sql-micros-day)))
+    ; A timestamp as the moment a zone's clock shows it, and a moment as
+    ; the timestamp a zone's clock shows: AT TIME ZONE is this function
+    (method timezone (self args node)
+      (%sql-arity "timezone" args (list 2))
+      (%sql-texts "timezone" (list (first args)))
+      (%sql-moments "timezone" args (rest args))
+      (let ((v (List second args)))
+        (pair (if (%sql-zoned? (first v)) (lit timestamp) (lit timestamptz))
+          (if (%sql-any-null? args) ()
+            (let ((zone (%sql-zone-named (rest (first args)) "Not implemented")))
+              (if (%sql-zoned? (first v)) (%sql-zone-local (rest v) zone)
+                (%sql-zone-global (%sql-moment v) zone)))))))
+    (method current_setting (self args node)
+      (%sql-arity "current_setting" args (list 1))
+      (%sql-texts "current_setting" args)
+      (if (str=? (sql-lower (rest (first args))) "timezone")
+        (pair (lit varchar) (sql-zone-name (sql-zone-session)))
+        (error (Str8 str "Catalog Error: unrecognized configuration parameter \""
+                         (rest (first args)) "\""))))
     (method today (self args node) (SqlFunction current_date args node))
     (method typeof (self args node)
       (%sql-arity "typeof" args (list 1))
@@ -1795,6 +1901,80 @@
         (#t (error (Str8 str "Not implemented Error: casting "
                              (%sql-type-name from) " to " name)))))))
 
+; --- text as a moment with a zone ----------------------------------------------
+
+(def %sql-digits?
+  (fn (_ text)
+    ((fn (self i)
+       (if (>= i (Str8 length text)) (> (Str8 length text) 0)
+         (if (and (>= (%sql-byte text i) 48) (<= (%sql-byte text i) 57)) (self (+ i 1)) #f)))
+     0)))
+
+; The seconds an offset's digits say, HH, HHMM or HHMMSS, or nil
+(def %sql-offset-seconds
+  (fn (_ digits)
+    (if (not (and (%sql-digits? digits) (List includes? (Str8 length digits) (list 2 4 6)))) ()
+      (let ((n (first (sql-decimal-read digits))))
+        (match
+          ((= (Str8 length digits) 2) (* n 3600))
+          ((= (Str8 length digits) 4) (+ (* (Num quotient n 100) 3600) (* (Num remainder n 100) 60)))
+          (#t (+ (* (Num quotient n 10000) 3600)
+                 (* (Num remainder (Num quotient n 100) 100) 60)
+                 (Num remainder n 100))))))))
+
+; Where a date's own minus signs are over: an offset's sign comes later
+(def %sql-date-width 10)
+
+; TEXT as (BODY . ZONE): the timestamp, and after it nil, or a list of the
+; seconds east of an offset written +HH[:MM[:SS]] or Z, or the name of a
+; zone
+(def %sql-zoned-parts
+  (fn (_ text)
+    (let ((space (Str8 last-index-of " " text))
+          (plus (Str8 last-index-of "+" text))
+          (minus (Str8 last-index-of "-" text))
+          (end (Str8 length text)))
+      (let ((sign (match
+                    ((not (null? plus)) plus)
+                    ((and (not (null? minus)) (>= minus %sql-date-width)) minus)
+                    (#t ()))))
+        (match
+          ((and (not (null? space)) (< (+ space 1) end)
+                (let ((c (%sql-byte text (+ space 1))))
+                  (or (and (>= c 65) (<= c 90)) (and (>= c 97) (<= c 122)))))
+            (pair (Str8 trim (Str8 sub 0 space text)) (Str8 sub (+ space 1) end text)))
+          ((and (> end 1) (or (Str8 ends? "Z" text) (Str8 ends? "z" text)))
+            (pair (Str8 sub 0 (- end 1) text) (list 0)))
+          ((null? sign) (pair text ()))
+          (#t
+            (let ((seconds (%sql-offset-seconds
+                             (Str8 replace ":" "" (Str8 sub (+ sign 1) end text)))))
+              (if (null? seconds) (pair text ())
+                (pair (Str8 trim (Str8 sub 0 sign text))
+                      (list (if (eq? sign plus) seconds (- 0 seconds))))))))))))
+
+; TEXT with the T that may stand between a date and a time made a blank
+(def %sql-spaced
+  (fn (_ text)
+    (if (and (> (Str8 length text) %sql-date-width) (= (%sql-byte text %sql-date-width) 84))
+      (Str8 append (Str8 sub 0 %sql-date-width text) " "
+                   (Str8 sub (+ %sql-date-width 1) (Str8 length text) text))
+      text)))
+
+; The moment TEXT names: a timestamp on the session's clock, or on the
+; clock of the offset or the zone written after it
+(def %sql-zoned-read
+  (fn (_ text)
+    (let ((parts (%sql-zoned-parts (%sql-spaced (Str8 trim text)))))
+      (let ((local (%sql-read-or sql-timestamp-read (first parts) "timestamp"
+                     (Str8 append "invalid timestamp field format: \"" text
+                                  "\", expected format is (YYYY-MM-DD HH:MM[:SS[.US]][±HH[:MM[:SS]]| ZONE])")))
+            (zone (rest parts)))
+        (match
+          ((null? zone) (%sql-zone-global local (sql-zone-session)))
+          ((pair? zone) (- local (* (first zone) sql-micros-second)))
+          (#t (%sql-zone-global local (%sql-zone-named zone "Conversion"))))))))
+
 (def-class SqlCast ()
   (static
     (method varchar (self v t) (sql-value-text v))
@@ -1833,7 +2013,8 @@
       (let ((from (first v)) (x (rest v)))
         (match
           ((eq? from (lit date)) x)
-          ((eq? from (lit timestamp)) (sql-floor-div x sql-micros-day))
+          ((or (eq? from (lit timestamp)) (%sql-zoned? from))
+            (sql-floor-div (%sql-moment v) sql-micros-day))
           ((eq? from (lit varchar))
             (%sql-read-or sql-date-read x "date"
               (Str8 append "invalid date field format: \"" x "\", expected format is (YYYY-MM-DD)")))
@@ -1842,16 +2023,28 @@
       (let ((from (first v)) (x (rest v)))
         (match
           ((eq? from (lit timestamp)) x)
+          ((%sql-zoned? from) (%sql-moment v))
           ((eq? from (lit date)) (* x sql-micros-day))
           ((eq? from (lit varchar))
             (%sql-read-or sql-timestamp-read x "timestamp"
               (Str8 append "invalid timestamp field format: \"" x
                            "\", expected format is (YYYY-MM-DD HH:MM:SS[.US][±HH[:MM[:SS]]| ZONE])")))
           (#t (%sql-no-cast from t)))))
+    ; A moment with a zone from one without is the moment the session's
+    ; clock shows it; text may end in an offset or a zone's name
+    (method timestamptz (self v t)
+      (let ((from (first v)) (x (rest v)))
+        (match
+          ((%sql-zoned? from) x)
+          ((%sql-moment-type? from) (%sql-zone-global (%sql-moment v) (sql-zone-session)))
+          ((eq? from (lit varchar)) (%sql-zoned-read x))
+          (#t (%sql-no-cast from t)))))
     (method time (self v t)
       (let ((from (first v)) (x (rest v)))
         (match
           ((eq? from (lit time)) x)
+          ((%sql-zoned? from)
+            (error "Conversion Error: Unimplemented type for cast (TIMESTAMP WITH TIME ZONE -> TIME)"))
           ((eq? from (lit timestamp)) (sql-floor-mod x sql-micros-day))
           ((eq? from (lit varchar))
             (%sql-read-or sql-clock-read x "time"

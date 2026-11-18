@@ -27,6 +27,7 @@
 (import x/num/tower)
 (import x/num/float)
 (import sql/words sql-lower sql-same-name?)
+(import sql/zone sql-zone-session!)
 (import sql/files sql-file-read sql-file-write sql-file-stem)
 (import sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
@@ -1113,6 +1114,14 @@
     (method with (self stmt) (%sql-query-result stmt ()))
     (method set (self stmt) (%sql-query-result stmt ()))
     ; Every SET is worked out from the row as it was
+    ; A setting of the session: its time zone, the one there is
+    (method setting (self stmt)
+      (unless (str=? (sql-lower (List second stmt)) "timezone")
+        (error (Str8 str "Catalog Error: unrecognized configuration parameter \""
+                         (List second stmt) "\"")))
+      (when (null? (sql-zone-session! (List third stmt)))
+        (error (Str8 str "Not implemented Error: Unknown TimeZone '" (List third stmt) "'!")))
+      ())
     (method update (self stmt)
       (when (sql-windowed? (rest (rest stmt)))
         (error "Binder Error: window functions are not allowed in UPDATE"))

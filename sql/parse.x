@@ -38,6 +38,8 @@
 ;                               for SELECT, COLUMNS the names it gives
 ;                               its first columns; RECURSIVE whether a
 ;                               table may read itself
+;   (setting NAME VALUE)        a setting of the session given a value,
+;                               or its first one again when VALUE is nil
 ;   (set OP ALL LEFT RIGHT)     OP union, intersect or except, of two select
 ;                               statements; ALL whether rows that repeat
 ;                               are kept.  An ORDER BY, LIMIT or OFFSET
@@ -251,7 +253,20 @@
 ; A type: ((TYPE SHOWN) . tokens-left).  A DECIMAL is (decimal WIDTH SCALE),
 ; the scale 0 when only a width is written.  A VARCHAR's length says
 ; nothing.  SHOWN is the name and what was in parentheses after it.
+; A type, and WITH TIME ZONE or WITHOUT TIME ZONE after a TIMESTAMP
 (def %sql-type
+  (fn (_ ts)
+    (let ((type (%sql-type-named ts)))
+      (let ((with (%sql-after (rest type) (list "WITH" "TIME" "ZONE")))
+            (without (%sql-after (rest type) (list "WITHOUT" "TIME" "ZONE"))))
+        (match
+          ((not (eq? (first (first type)) (lit timestamp))) type)
+          ((not (null? with))
+            (pair (list (lit timestamptz) "TIMESTAMP WITH TIME ZONE") (first with)))
+          ((not (null? without)) (pair (first type) (first without)))
+          (#t type))))))
+
+(def %sql-type-named
   (fn (_ ts)
     (when (null? ts) (%sql-near ts))
     (let ((row (List find
@@ -291,6 +306,17 @@
       (pair (pair (lit cast) (pair (list (lit str) (List second (List second ts)))
                                    (first type)))
             (rest (rest ts))))))
+
+; TIMESTAMP WITH TIME ZONE and a string after it: the type, of several
+; words, read first
+(def %sql-zoned-string
+  (fn (_ ts)
+    (let ((type (%sql-type ts)))
+      (if (and (not (null? (rest type))) (eq? (first (first (rest type))) (lit str)))
+        (pair (pair (lit cast) (pair (list (lit str) (List second (first (rest type))))
+                                     (first type)))
+              (rest (rest type)))
+        (%sql-near (rest type))))))
 
 ; INTERVAL and a count, TS after the word: the unit follows
 (def %sql-interval
@@ -346,6 +372,8 @@
         ((not (eq? (first (first ts)) (lit id))) ())
         ((and (not (null? after)) (eq? (first (first after)) (lit str)) (%sql-type-word? text))
           (%sql-typed-string ts))
+        ((and (%sql-word? ts "TIMESTAMP") (not (null? (%sql-after after (list "WITH" "TIME" "ZONE")))))
+          (%sql-zoned-string ts))
         ((and (%sql-word? ts "INTERVAL") (not (null? after))) (%sql-interval after))
         ((and (%sql-word? ts "EXTRACT") (%sql-op? after "(")
               (%sql-name? (rest after)) (%sql-kw? (List drop 3 ts) "FROM"))
@@ -565,15 +593,21 @@
                     (rest (rest args)))
               (%sql-near (rest args)))))))))
 
-; A primary and the casts written after it with ::
+; A primary and what is written after it: a cast with ::, and AT TIME
+; ZONE, which is the function timezone of the zone and the value
 (def %sql-postfix
   (fn (_ ts)
     (let ((e (%sql-primary ts)))
       ((fn (self left ts)
-         (if (%sql-op? ts "::")
-           (let ((type (%sql-type (rest ts))))
-             (self (pair (lit cast) (pair left (first type))) (rest type)))
-           (pair left ts)))
+         (let ((zoned (%sql-after ts (list "AT" "TIME" "ZONE"))))
+           (match
+             ((%sql-op? ts "::")
+               (let ((type (%sql-type (rest ts))))
+                 (self (pair (lit cast) (pair left (first type))) (rest type))))
+             ((not (null? zoned))
+               (let ((zone (%sql-primary (first zoned))))
+                 (self (list (lit call) "timezone" (list (first zone) left) #f) (rest zone))))
+             (#t (pair left ts)))))
        (first e) (rest e)))))
 
 ; A constant with a minus before it: the constant, so the least INTEGER is
@@ -1224,6 +1258,21 @@
                         (%sql-option (first options) (lit format) ())))
                 (rest options)))))))
 
+; SET name = value, SET name TO value, and SET TIME ZONE value, the value
+; a string or a word: ((setting NAME VALUE) . tokens-left)
+(def %sql-setting
+  (fn (_ ts)
+    (let ((zone (%sql-after ts (list "TIME" "ZONE"))))
+      (let ((name (if (null? zone) (%sql-name ts) "TimeZone"))
+            (after (if (null? zone)
+                     (if (or (%sql-op? (rest ts) "=") (%sql-word? (rest ts) "TO")) (rest (rest ts))
+                       (%sql-near (rest ts)))
+                     (first zone))))
+        (if (and (not (null? after))
+                 (or (eq? (first (first after)) (lit str)) (%sql-name? after)))
+          (pair (list (lit setting) name (List second (first after))) (rest after))
+          (%sql-near after))))))
+
 (def %sql-statement
   (fn (_ ts)
     (match
@@ -1236,6 +1285,9 @@
       ((%sql-word? ts "UPDATE") (%sql-update (rest ts)))
       ((%sql-word? ts "DELETE") (%sql-delete (rest ts)))
       ((%sql-word? ts "DROP") (%sql-drop (rest ts)))
+      ((%sql-word? ts "SET") (%sql-setting (rest ts)))
+      ((and (%sql-word? ts "RESET") (%sql-name? (rest ts)))
+        (pair (list (lit setting) (List second (first (rest ts))) ()) (rest (rest ts))))
       (#t (%sql-near ts)))))
 
 (def %sql-statements
