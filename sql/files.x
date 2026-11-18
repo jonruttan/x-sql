@@ -299,7 +299,8 @@
   (fn (_ v)
     (match
       ((sql-null? v) "null")
-      ((List includes? (first v) (list (lit integer) (lit bigint) (lit hugeint) (lit double) (lit boolean)))
+      ((List includes? (first v) (list (lit tinyint) (lit smallint) (lit integer) (lit bigint)
+                                      (lit hugeint) (lit real) (lit double) (lit boolean)))
         (sql-value-text v))
       ((pair? (first v)) (sql-value-text v))
       (#t (Json emit (sql-value-text v))))))

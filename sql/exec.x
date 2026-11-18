@@ -586,7 +586,8 @@
                     (List third call)))
                 ")'. You might need to add explicit type casts."))))
 
-(def %sql-whole-types (list (lit integer) (lit bigint) (lit hugeint)))
+(def %sql-whole-types
+  (list (lit tinyint) (lit smallint) (lit integer) (lit bigint) (lit hugeint)))
 
 ; The whole number CALL's argument at the index I is, nil for a NULL
 (def %sql-window-whole

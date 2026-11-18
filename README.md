@@ -25,10 +25,11 @@ Pre-release: no release has been cut. Paired with x-lang v0.55.0
 
 What is built:
 
-- **Values.** INTEGER, BIGINT and HUGEINT, each constant the narrowest
-  type that holds it; DECIMAL, exact, a constant with a point taking the
-  width and scale it is written with; DOUBLE, shown in the fewest digits
-  that read back as it; VARCHAR; BOOLEAN; NULL.
+- **Values.** TINYINT, SMALLINT, INTEGER, BIGINT and HUGEINT, each
+  constant the narrowest of the last three that holds it; DECIMAL, exact,
+  a constant with a point taking the width and scale it is written with;
+  DOUBLE and the 32-bit REAL, each shown in the fewest digits that read
+  back as it; VARCHAR; BOOLEAN; NULL.
 - **Dates and times.** DATE, TIME, TIMESTAMP to the microsecond, and
   INTERVAL, with no time zone. A date and a count of days, a moment and
   an interval, two moments apart; a month added keeps the day or takes
@@ -37,7 +38,8 @@ What is built:
   monthname last_day make_date strftime now current_date today`.
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
-  a double when either is one. `/` answers a DOUBLE. `// %` on integers.
+  a double when either is one, a REAL when either is one and neither a
+  double. `/` answers a DOUBLE, or a REAL of REALs. `// %` on integers.
   `= == <> != < <= > >=` across the numeric types; `AND OR NOT` in three
   values; `IS [NOT] NULL`; `||`.
 - **Conditions.** `CASE` in both forms, its answers going into one
@@ -123,14 +125,14 @@ What is built:
 - **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
-Anything else is refused by name (`Not implemented Error: the type REAL`) and not
+Anything else is refused by name (`Not implemented Error: the type UINTEGER`) and not
 answered differently.
 
 ## Planned
 
 In this order:
 
-1. The remaining types: REAL, the small integers, TIMESTAMP WITH TIME
+1. The remaining types: the unsigned integers, TIMESTAMP WITH TIME
    ZONE, and the functions that go with them.
 2. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
    with them the nested values of a JSON file; a CSV's separator and its

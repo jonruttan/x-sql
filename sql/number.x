@@ -75,8 +75,12 @@
 
 ; --- the fewest digits -------------------------------------------------------
 
-; The least exponent of a double that is not subnormal
-(def %sql-least-exponent -1022)
+; What sets a binary float's digits: how far below its exponent a quarter
+; of the gap to the next float lies, its least exponent that is not
+; subnormal, and the most digits it needs to read back as itself.  A
+; double has 53 bits of mantissa and a REAL 24.
+(def %sql-double-form (list 54 -1022 17))
+(def %sql-real-form (list 25 -126 9))
 
 ; The sign of R * 10^P - Y * 2^S, all integers
 (def %sql-compare
@@ -108,10 +112,7 @@
       (self (Num quotient r 10) (+ p 1))
       (pair r p))))
 
-; The most digits a double needs to read back as itself
-(def %sql-most-digits 17)
-
-; A positive finite double as (R . P): R * 10^P is the number of fewest
+; A positive finite float of FORM as (R . P): R * 10^P is the number of fewest
 ; digits that reads back as it, the nearest to it of that many digits.
 ;
 ; The double is X units of a quarter of the gap to the next double, 2^S.
@@ -119,15 +120,15 @@
 ; HIGH, the ends included when the mantissa is even.  Below a power of two
 ; the gap is half as wide.  Fewer digits read back only if more do, so the
 ; count is found by halving.
-(def sql-double-digits
-  (fn (_ x)
-    (let ((split (%sql-split x)))
+(def %sql-float-digits
+  (fn (_ x form)
+    (let ((split (%sql-split x)) (lowest (List second form)))
       (let ((m (first split)) (q (rest split)))
         (let ((e (- (+ (%sql-bits m 0) q) 1)))
-          (let ((s (- (if (< e %sql-least-exponent) %sql-least-exponent e)
-                      %sql-headroom)))
+          (let ((s (- (if (< e lowest) lowest e)
+                      (first form))))
             (let ((units (* m (%sql-pow2 (- q s)))))
-              (let ((low (- units (if (and (= m 1) (> e %sql-least-exponent)) 1 2)))
+              (let ((low (- units (if (and (= m 1) (> e lowest)) 1 2)))
                     (high (+ units 2))
                     (closed (= (Num remainder (Num quotient units 4) 2) 0))
                     (k (%sql-exponent10 units s
@@ -145,9 +146,11 @@
                                 (let ((mid (Num quotient (+ least most) 2)))
                                   (if (reads-back mid) (self least mid)
                                     (self (+ mid 1) most)))))
-                            1 %sql-most-digits)))
+                            1 (List third form))))
                     (let ((p (+ (- k n) 1)))
                       (%sql-trimmed (%sql-rounded units s p) p))))))))))))
+
+(def sql-double-digits (fn (_ x) (%sql-float-digits x %sql-double-form)))
 
 ; --- a double as text --------------------------------------------------------
 
@@ -181,8 +184,8 @@
                    (if (< (Str8 length e) 2) (Str8 append "0" e) e)))))
 
 (def %sql-positive-text
-  (fn (_ x)
-    (let ((rp (sql-double-digits x)))
+  (fn (_ x form)
+    (let ((rp (%sql-float-digits x form)))
       (let ((digits (Str8 str (first rp))))
         (let ((k (- (+ (Str8 length digits) (rest rp)) 1)))
           (if (and (>= k %sql-fixed-least) (<= k %sql-fixed-most))
@@ -191,15 +194,56 @@
 
 (def %sql-zero (Float from 0))
 
-; A double as DuckDB shows it
-(def sql-double-text
-  (fn (_ x)
+; A float of FORM as DuckDB shows it
+(def %sql-float-shown
+  (fn (_ x form)
     (match
       ((Float nan? x) "nan")
       ((Float inf? x) (if (< x %sql-zero) "-inf" "inf"))
       ((= x %sql-zero) "0.0")
-      ((< x %sql-zero) (Str8 append "-" (%sql-positive-text (- %sql-zero x))))
-      (#t (%sql-positive-text x)))))
+      ((< x %sql-zero) (Str8 append "-" (%sql-positive-text (- %sql-zero x) form)))
+      (#t (%sql-positive-text x form)))))
+
+(def sql-double-text (fn (_ x) (%sql-float-shown x %sql-double-form)))
+
+; A REAL is held as the double it is equal to, and shown in the fewest
+; digits that read back as it among REALs
+(def sql-real-text (fn (_ x) (%sql-float-shown x %sql-real-form)))
+
+; --- a REAL ------------------------------------------------------------------
+
+; The bits of a REAL's mantissa
+(def %sql-real-bits 24)
+
+; The power of two no REAL reaches
+(def %sql-real-limit 128)
+
+; A positive finite double as the REAL nearest it, a tie going to the even
+; mantissa.  One too great for a REAL is an infinity.  A REAL below the
+; least normal one keeps more bits than it has.
+(def %sql-real-positive
+  (fn (_ x)
+    (let ((split (%sql-split x)))
+      (let ((shift (- (%sql-bits (first split) 0) %sql-real-bits)))
+        (let ((r (if (<= shift 0) x
+                   (let ((unit (%sql-pow2 shift)))
+                     (let ((q (Num quotient (first split) unit))
+                           (twice (* 2 (Num remainder (first split) unit))))
+                       (%sql-scale2
+                         (Float from
+                           (if (or (> twice unit) (and (= twice unit) (= (Num remainder q 2) 1)))
+                             (+ q 1) q))
+                         (+ (rest split) shift)))))))
+          (if (< r (%sql-scale2 (Float from 1) %sql-real-limit)) r
+            (/ (Float from 1) %sql-zero)))))))
+
+; A double as the REAL nearest it
+(def sql-real-of
+  (fn (_ x)
+    (match
+      ((or (Float nan? x) (Float inf? x) (= x %sql-zero)) x)
+      ((< x %sql-zero) (- %sql-zero (%sql-real-positive (- %sql-zero x))))
+      (#t (%sql-real-positive x)))))
 
 ; --- a double as other numbers -----------------------------------------------
 
@@ -296,6 +340,7 @@
             (Str8 append "." (%sql-zeros (- scale (Str8 length part))) part)))))))
 
 (provide sql/number
-  sql-pow10 sql-double-digits sql-double-text sql-double-of
+  sql-pow10 sql-double-digits sql-double-text sql-double-of sql-real-text
+  sql-real-of
   sql-double-scaled sql-double-integer sql-double-finite?
   sql-decimal-read sql-rescale sql-decimal-text)

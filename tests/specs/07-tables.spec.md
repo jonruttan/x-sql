@@ -100,11 +100,11 @@ Catalog Error: Column with name "a" already exists!
 DuckDB makes the table.
 
 ```x
-(sql "CREATE OR REPLACE TABLE t (a REAL)")
+(sql "CREATE OR REPLACE TABLE t (a UINTEGER)")
 ```
 ---
 ```output
-Not implemented Error: the type REAL
+Not implemented Error: the type UINTEGER
 ```
 
 ### a constraint is not built
