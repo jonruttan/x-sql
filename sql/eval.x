@@ -7,7 +7,7 @@
 ; @license MIT No Attribution (MIT-0)
 ;
 ; A value is (TYPE . X): TYPE one of tinyint, smallint, integer, bigint,
-; hugeint, real, double,
+; hugeint, the same five with a u before them, real, double,
 ; varchar, boolean, date, time, timestamp, interval and null, or
 ; (decimal WIDTH SCALE), and X the x value, nil for NULL.  A decimal's X is
 ; its digits as an integer: 1.50 is 150 at scale 2.  A date, a time and a
@@ -53,14 +53,26 @@
 (def %sql-2^63 (* %sql-2^31 %sql-2^31 2))
 (def %sql-2^127 (* %sql-2^63 %sql-2^63 2))
 
-; An integer type, one past its greatest value, its name in an error, and
-; the width of the DECIMAL that holds it; narrowest first.
+(def %sql-2^8 256)
+(def %sql-2^16 65536)
+(def %sql-2^32 (* %sql-2^31 2))
+(def %sql-2^64 (* %sql-2^63 2))
+(def %sql-2^128 (* %sql-2^127 2))
+
+; An integer type, one past its greatest value, its name in an error, the
+; width of the DECIMAL that holds it, and its least value.  The signed
+; types come first, narrowest first, then the unsigned.
 (def %sql-int-rows
-  (list (list (lit tinyint) %sql-2^7 "INT8" 3)
-        (list (lit smallint) %sql-2^15 "INT16" 5)
-        (list (lit integer) %sql-2^31 "INT32" 10)
-        (list (lit bigint) %sql-2^63 "INT64" 19)
-        (list (lit hugeint) %sql-2^127 "INT128" 38)))
+  (list (list (lit tinyint) %sql-2^7 "INT8" 3 (- 0 %sql-2^7))
+        (list (lit smallint) %sql-2^15 "INT16" 5 (- 0 %sql-2^15))
+        (list (lit integer) %sql-2^31 "INT32" 10 (- 0 %sql-2^31))
+        (list (lit bigint) %sql-2^63 "INT64" 19 (- 0 %sql-2^63))
+        (list (lit hugeint) %sql-2^127 "INT128" 38 (- 0 %sql-2^127))
+        (list (lit utinyint) %sql-2^8 "UINT8" 3 0)
+        (list (lit usmallint) %sql-2^16 "UINT16" 5 0)
+        (list (lit uinteger) %sql-2^32 "UINT32" 10 0)
+        (list (lit ubigint) %sql-2^64 "UINT64" 20 0)
+        (list (lit uhugeint) %sql-2^128 "UINT128" 39 0)))
 
 ; A type, its SQL name, and the name a result's heading shows
 (def %sql-type-rows
@@ -70,6 +82,11 @@
         (list (lit integer) "INTEGER" "int32")
         (list (lit bigint) "BIGINT" "int64")
         (list (lit hugeint) "HUGEINT" "int128")
+        (list (lit utinyint) "UTINYINT" "uint8")
+        (list (lit usmallint) "USMALLINT" "uint16")
+        (list (lit uinteger) "UINTEGER" "uint32")
+        (list (lit ubigint) "UBIGINT" "uint64")
+        (list (lit uhugeint) "UHUGEINT" "uint128")
         (list (lit double) "DOUBLE" "double")
         (list (lit varchar) "VARCHAR" "varchar")
         (list (lit boolean) "BOOLEAN" "boolean")
@@ -85,6 +102,8 @@
 (def %sql-int? (fn (_ t) (not (null? (%sql-row t %sql-int-rows)))))
 (def %sql-limit (fn (_ t) (List second (%sql-row t %sql-int-rows))))
 (def %sql-int-name (fn (_ t) (List third (%sql-row t %sql-int-rows))))
+(def %sql-least (fn (_ t) (List ref 4 (%sql-row t %sql-int-rows))))
+(def %sql-unsigned? (fn (_ t) (= (%sql-least t) 0)))
 
 (def %sql-decimal? (fn (_ t) (pair? t)))
 (def %sql-double? (fn (_ t) (eq? t (lit double))))
@@ -117,24 +136,57 @@
 (def sql-type-name %sql-type-name)
 
 (def %sql-fits?
-  (fn (_ t n)
-    (let ((limit (%sql-limit t)))
-      (and (< n limit) (>= n (- 0 limit))))))
+  (fn (_ t n) (and (< n (%sql-limit t)) (>= n (%sql-least t)))))
 
-; The types an integer constant may have: INTEGER and wider
-(def %sql-constant-rows (List drop 2 %sql-int-rows))
+; The types an integer constant may have, narrowest first: INTEGER and the
+; wider signed ones, and UHUGEINT past them
+(def %sql-constant-types
+  (list (lit integer) (lit bigint) (lit hugeint) (lit uhugeint)))
 
 ; The narrowest type an integer constant N has
 (def %sql-int-type
   (fn (_ n)
-    (let ((row (List find (fn (_ r) (%sql-fits? (first r) n)) %sql-constant-rows)))
-      (if (null? row)
+    (let ((t (List find (fn (_ t) (%sql-fits? t n)) %sql-constant-types)))
+      (if (null? t)
         (error (Str8 str "Not implemented Error: the integer " n
-                         " is wider than HUGEINT"))
-        (first row)))))
+                         " is wider than UHUGEINT"))
+        t))))
 
+; Every value of the integer type B is one of A
+(def %sql-holds?
+  (fn (_ a b)
+    (and (>= (%sql-limit a) (%sql-limit b)) (<= (%sql-least a) (%sql-least b)))))
+
+; The first of TYPES that holds both A and B, or nil
+(def %sql-holding
+  (fn (_ a b types)
+    (List find (fn (_ t) (and (%sql-holds? t a) (%sql-holds? t b))) types)))
+
+; The type arithmetic on the integer types A and B answers: the one that
+; holds the other; when neither does, a signed with an unsigned, a BIGINT,
+; or a HUGEINT, whichever holds both, and a DOUBLE when none does.  It is
+; what DuckDB picks.
+(def %sql-arith-wider
+  (fn (_ a b)
+    (match
+      ((%sql-holds? a b) a)
+      ((%sql-holds? b a) b)
+      (#t (let ((t (%sql-holding a b (list (lit bigint) (lit hugeint)))))
+            (if (null? t) (lit double) t))))))
+
+(def %sql-signed-types
+  (list (lit tinyint) (lit smallint) (lit integer) (lit bigint) (lit hugeint)))
+
+; The type several values of the integer types A and B take: the one that
+; holds the other, else the narrowest signed type that holds both, and a
+; HUGEINT when none does
 (def %sql-wider
-  (fn (_ a b) (if (>= (%sql-limit a) (%sql-limit b)) a b)))
+  (fn (_ a b)
+    (match
+      ((%sql-holds? a b) a)
+      ((%sql-holds? b a) b)
+      (#t (let ((t (%sql-holding a b %sql-signed-types)))
+            (if (null? t) (lit hugeint) t))))))
 
 ; A value as a result shows it
 (def sql-value-text
@@ -218,7 +270,7 @@
   (fn (_ sign a b)
     (let ((ta (first a)) (tb (first b)))
       (match
-        ((and (%sql-int? ta) (%sql-int? tb)) (%sql-wider ta tb))
+        ((and (%sql-int? ta) (%sql-int? tb)) (%sql-arith-wider ta tb))
         ((and (%sql-int? ta) (%sql-null-type? tb)) ta)
         ((and (%sql-null-type? ta) (%sql-int? tb)) tb)
         ((and (%sql-null-type? ta) (%sql-null-type? tb)) (lit bigint))
@@ -237,8 +289,10 @@
 (def %sql-integer-arith
   (fn (_ sign word f a b)
     (let ((t (%sql-arith-type sign a b)))
-      (if (or (%sql-null? a) (%sql-null? b)) (pair t ())
-        (%sql-checked t (f (rest a) (rest b)) word sign a b)))))
+      (match
+        ((%sql-double? t) (%sql-double-arith f a b))
+        ((or (%sql-null? a) (%sql-null? b)) (pair t ()))
+        (#t (%sql-checked t (f (rest a) (rest b)) word sign a b))))))
 
 ; A double: both operands as doubles.  An overflow is an infinity.
 (def %sql-double-arith
@@ -383,6 +437,8 @@
       (error (Str8 str "Not implemented Error: " sign " on a number that is not an integer")))
     (let ((t (%sql-arith-type sign a b)))
       (match
+        ((%sql-double? t)
+          (error (Str8 str "Not implemented Error: " sign " on a UHUGEINT and a signed integer")))
         ((or (%sql-null? a) (%sql-null? b)) (pair t ()))
         ((= (rest b) 0)
           (error (Str8 str "Invalid Input Error: Division by zero in expression "
@@ -1202,6 +1258,10 @@
       (%sql-one-argument node)
       (let ((t (%sql-arg-type node scope)) (values (%sql-values node scope)))
         (match
+          ((eq? t (lit uhugeint))
+            (pair (lit double)
+              (if (null? values) ()
+                (List fold (fn (_ acc v) (+ acc (%sql-as-double v))) (Float from 0) values))))
           ((%sql-int? t)
             (%sql-total (lit hugeint) values (%sql-limit (lit hugeint))))
           ((%sql-decimal? t)
@@ -1245,13 +1305,11 @@
           (#t (error (Str8 str "Catalog Error: " (List second call)
                                " is not an aggregate function"))))))))
 
-(def %sql-small-types (list (lit tinyint) (lit smallint)))
-
 ; V, the value of NODE, as it stands beside OTHER: an integer constant
-; takes a small integer type of OTHER's that holds it
+; takes OTHER's integer type when that holds it
 (def %sql-constant-beside
   (fn (_ node v other)
-    (if (and (eq? (first node) (lit int)) (List includes? (first other) %sql-small-types)
+    (if (and (eq? (first node) (lit int)) (%sql-int? (first other))
              (%sql-fits? (first other) (rest v)))
       (pair (first other) (rest v))
       v)))
@@ -1374,8 +1432,11 @@
                   (- 0 (rest v))))))
           (#t
             (let ((t (%sql-arith-type "-" v v)))
-              (if (%sql-null? v) (pair t ())
-                (%sql-checked t (- 0 (rest v)) "negation" "-" (pair t 0) v)))))))
+              (match
+                ((%sql-null? v) (pair t ()))
+                ((and (%sql-int? t) (%sql-unsigned? t) (> (rest v) 0))
+                  (error "Out of Range Error: Overflow in negation of numeric value!"))
+                (#t (%sql-checked t (- 0 (rest v)) "negation" "-" (pair t 0) v))))))))
     (method not (self node scope)
       (let ((v (%sql-truth (sql-eval (List second node) scope))))
         (pair (lit boolean) (if (null? v) () (not v)))))
@@ -1746,6 +1807,11 @@
     (method hugeint (self v t) (%sql-cast-integer v t))
     (method tinyint (self v t) (%sql-cast-integer v t))
     (method smallint (self v t) (%sql-cast-integer v t))
+    (method utinyint (self v t) (%sql-cast-integer v t))
+    (method usmallint (self v t) (%sql-cast-integer v t))
+    (method uinteger (self v t) (%sql-cast-integer v t))
+    (method ubigint (self v t) (%sql-cast-integer v t))
+    (method uhugeint (self v t) (%sql-cast-integer v t))
     (method double (self v t) (%sql-cast-float v "DOUBLE"))
     ; A number too great for a REAL is refused; text that spells one is an
     ; infinity
