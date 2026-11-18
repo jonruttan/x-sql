@@ -114,13 +114,12 @@ check "the server's error"     "ERROR 1146 (42S02): Table 'shop.nope' doesn't ex
 check "many rows"              "│   5000 │" "mysql://open@$AT" -c "SELECT seq FROM seq_1_to_5000"
 check "text of more than one byte a letter" "│ héllo   │" "mysql://open@$AT" -c "SELECT 'héllo' AS s"
 
-# A MariaDB from 11.4 makes itself a certificate and takes TLS unasked, and
-# like MySQL it asks every client for a certificate of its own.  The
-# platform's TLS does not answer that yet, so TLS is not tried unless
-# asked for, and asked for it is refused with the reason.
+# A MariaDB from 11.4 makes itself a certificate and takes TLS unasked, so
+# a session is over TLS unless the URL says not.
 SSL="SHOW STATUS LIKE 'Ssl_version'"
-check "no TLS unless asked"    "│ Ssl_version   │         │" "mysql://open@$AT" -c "$SSL"
-check "sslmode=require says why it cannot" "TLS with a MySQL or MariaDB server is not possible yet" \
-	"mysql://open@$AT?sslmode=require" -c "$SSL"
+check "TLS when the server has it" "TLSv1.3" "mysql://open@$AT" -c "$SSL"
+check "sslmode=require"            "TLSv1.3" "mysql://open@$AT?sslmode=require" -c "$SSL"
+check "sslmode=disable is in the clear" "│ Ssl_version   │         │" \
+	"mysql://open@$AT?sslmode=disable" -c "$SSL"
 
 exit "$FAILED"

@@ -252,9 +252,7 @@
             "the server has it, which is what is asked when nothing is said;"
             "require, TLS or no connection; verify-full, that with the"
             "server's certificate checked for its name against Mozilla's"
-            "roots; disable, none.  Only verify-full knows who the server is."
-            "With MySQL and MariaDB nothing said is disable, and TLS is not"
-            "possible yet: their servers ask a client for a certificate.")
+            "roots; disable, none.  Only verify-full knows who the server is.")
       (list ".connect postgres://me@localhost/mydb"
             ".connect postgres://me@db.example/shop?sslmode=verify-full"
             "x -l sql -- mysql://me@localhost/mydb -c \"SELECT version()\""))

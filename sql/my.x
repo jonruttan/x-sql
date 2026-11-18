@@ -303,17 +303,6 @@
       ((str=? mode "prefer") #f)
       (#t (error "Connection Error: the server does not take TLS, and sslmode asks for it")))))
 
-; TLS on LINK.  These servers ask every client for a certificate, and a
-; TLS that will not answer that ends the handshake there: its refusal is
-; said with what to do about it.
-(def %my-secure!
-  (fn (_ link host verify)
-    (guard (e (let ((text (Str8 str e)))
-                (error (if (Str8 includes? "client certificate" text)
-                         "Connection Error: TLS with a MySQL or MariaDB server is not possible yet: the server asks for a client certificate, which x-lang's TLS does not answer; sslmode=disable connects in the clear"
-                         text))))
-      (link secure! host verify))))
-
 ; A session on LINK: the handshake, TLS when TLS, a list of a mode and the
 ; server's name, asks for it and the server has it, the handshake's
 ; answer, and the server's OK.  DATABASE may be nil.  Answers LINK.
@@ -324,7 +313,7 @@
         (let ((secure (if (null? tls) #f (%my-secure? (first tls) (List third shake)))))
           (when secure
             (%my-send link (+ (first hello) 1) (%my-ssl-request database))
-            (%my-secure! link (List second tls) (str=? (first tls) "verify-full")))
+            (link secure! (List second tls) (str=? (first tls) "verify-full")))
           (%my-send link (+ (first hello) (if secure 2 1))
             (%my-response user database (first shake)
                           (my-auth (first shake) password (List second shake))

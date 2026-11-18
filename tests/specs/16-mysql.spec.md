@@ -239,6 +239,6 @@ Connection Error: the server closed the connection
 ```
 ---
 ```output
-("db.example" 3306 () "mysql" "disable")
-("h" 3307 "shop" "mariadb" "disable")
+("db.example" 3306 () "mysql" "prefer")
+("h" 3307 "shop" "mariadb" "prefer")
 ```
