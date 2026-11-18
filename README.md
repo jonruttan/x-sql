@@ -25,8 +25,9 @@ Pre-release: no release has been cut. Paired with x-lang v0.55.0
 
 What is built:
 
-- **Values.** TINYINT, SMALLINT, INTEGER, BIGINT and HUGEINT, each
-  constant the narrowest of the last three that holds it; DECIMAL, exact,
+- **Values.** TINYINT, SMALLINT, INTEGER, BIGINT and HUGEINT, and the
+  unsigned UTINYINT to UHUGEINT; an integer constant is the narrowest of
+  INTEGER, BIGINT, HUGEINT and UHUGEINT that holds it; DECIMAL, exact,
   a constant with a point taking the width and scale it is written with;
   DOUBLE and the 32-bit REAL, each shown in the fewest digits that read
   back as it; VARCHAR; BOOLEAN; NULL.
@@ -125,15 +126,14 @@ What is built:
 - **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
-Anything else is refused by name (`Not implemented Error: the type UINTEGER`) and not
+Anything else is refused by name (`Not implemented Error: the type BLOB`) and not
 answered differently.
 
 ## Planned
 
 In this order:
 
-1. The remaining types: the unsigned integers, TIMESTAMP WITH TIME
-   ZONE, and the functions that go with them.
+1. TIMESTAMP WITH TIME ZONE, and the functions that go with it.
 2. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
    with them the nested values of a JSON file; a CSV's separator and its
    other options; Parquet.

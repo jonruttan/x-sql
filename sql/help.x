@@ -151,6 +151,8 @@
             "INTEGER (INT, INT4)    32-bit integer"
             "BIGINT (INT8, LONG)    64-bit integer"
             "HUGEINT                128-bit integer"
+            "UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT   the same five, unsigned;"
+            "                       also UINT8 UINT16 UINT32 UINT64 UINT128"
             "DECIMAL(width, scale)  exact, NUMERIC its other name; (18, 3) alone"
             "DOUBLE (FLOAT8)        64-bit floating point"
             "REAL (FLOAT, FLOAT4)   32-bit floating point"

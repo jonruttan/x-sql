@@ -267,12 +267,12 @@ Conversion Error: Type DOUBLE with value inf can't be cast because the value is 
 
 ### a type that is not built
 
-DuckDB answers a UINTEGER.
+DuckDB answers a BLOB.
 
 ```x
-(sql "SELECT 1::UINTEGER")
+(sql "SELECT 1::BLOB")
 ```
 ---
 ```output
-Not implemented Error: the type UINTEGER
+Not implemented Error: the type BLOB
 ```
