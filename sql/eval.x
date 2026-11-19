@@ -777,7 +777,8 @@
       (#t #t))))
 
 ; The type E has in SCOPE, found over a row of NULLs so that nothing a row
-; holds is computed; nil when even that cannot be computed
+; holds is computed; nil when even that cannot be computed.  What the
+; scope holds for its windows and unnests it holds still.
 (def %sql-type-in
   (fn (_ e scope)
     (guard (_ (lit null))
@@ -786,7 +787,8 @@
                  (list (first scope)
                        (List repeat (List length (first scope)) ())
                        (List third scope)
-                       (%sql-fourth scope))))))))
+                       (%sql-fourth scope)
+                       (%sql-scope-windows scope))))))))
 
 ; --- LIKE --------------------------------------------------------------------
 
@@ -2023,6 +2025,14 @@
                                (%sql-scope-windows scope)))))
         (if (null? held) (error "Binder Error: Window functions are not supported here")
           (rest held))))
+    ; An unnest's value was worked out for the row before the row's items
+    ; are, as a window's is; anywhere no row was made for it, it has none
+    (method unnest (self node scope)
+      (let ((held (if (null? scope) ()
+                    (List find (fn (_ h) (same? (first h) node))
+                               (%sql-scope-windows scope)))))
+        (if (null? held) (error "Binder Error: UNNEST not supported here")
+          (rest held))))
     (method col (self node scope)
       (if (or (null? scope) (and (null? (first scope)) (null? (%sql-fourth scope))))
         (error (Str8 str "Binder Error: Referenced column \"" (List second node)
@@ -2165,6 +2175,26 @@
     (let ((own (List find (fn (_ row) (str=? (first row) (sql-lower name))) %sql-call-names)))
       (if (null? own) (sql-lower name) (rest own)))))
 
+; A table of a FROM spelled out: its name, a select statement in
+; parentheses, or an unnest; the column names an alias gave it are not
+; spelled
+(def %sql-table-text
+  (fn (self table)
+    (match
+      ((not (pair? table)) table)
+      ((eq? (first table) (lit renamed)) (self (List second table)))
+      ((eq? (first table) (lit unnest))
+        (Str8 append "unnest(" (Str8 join ", " (List map sql-expr-name (List second table))) ")"))
+      (#t (Str8 append "(" (%sql-select-text table) ")")))))
+
+; The column names an alias gave TABLE, in parentheses; nothing when it
+; gave none
+(def %sql-table-names-text
+  (fn (_ table)
+    (if (and (pair? table) (eq? (first table) (lit renamed)))
+      (Str8 append "(" (Str8 join ", " (List third table)) ")")
+      "")))
+
 ; A select statement spelled out for a heading, as DuckDB spells one back:
 ; its items, its tables, and the clauses after
 (def %sql-select-text
@@ -2194,11 +2224,10 @@
                   (fn (_ source)
                     (let ((named (if (symbol? (first source)) (rest source) source)))
                       (Str8 append
-                        (if (pair? (first named))
-                          (Str8 append "(" (%sql-select-text (first named)) ")")
-                          (first named))
+                        (%sql-table-text (first named))
                         (if (null? (List second named)) ""
-                          (Str8 append " AS " (List second named))))))
+                          (Str8 append " AS " (List second named)
+                                       (%sql-table-names-text (first named)))))))
                   (List third stmt)))))
           (clause "WHERE" (List ref 3 stmt))
           (if (or (null? (List ref 7 stmt)) (eq? (List ref 7 stmt) (lit all))) ""
@@ -2311,6 +2340,8 @@
       (let ((call (sql-expr-name (List second node))))
         (Str8 append (if (str=? call "count_star()") "count()" call)
                      " OVER (" (Str8 join " " (%sql-window-texts node)) ")")))
+    (method unnest (self node)
+      (Str8 append "unnest(" (Str8 join ", " (List map sql-expr-name (List second node))) ")"))
     (method int (self node) (Str8 str (List second node)))
     (method dec (self node) (List ref 4 node))
     (method dbl (self node) (List second node))

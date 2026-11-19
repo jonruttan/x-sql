@@ -14,6 +14,7 @@
 ; A statement, its head the name sql/exec's SqlStatement knows it by:
 ;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET GROUP HAVING DISTINCT QUALIFY)
 ;       ITEMS   a list of (EXPR ALIAS), ALIAS nil or text; EXPR may be
+;               (unnest ARGS), a row for each element of a list
 ;               (star QUALIFIER [LISTS]), every column, or every column of
 ;               one table; LISTS, when the star has any, is (EXCLUDES
 ;               REPLACES RENAMES): EXCLUDES of (QUALIFIER NAME), REPLACES
@@ -539,7 +540,8 @@
               (%sql-struct-node %sql-struct-named (List drop 2 ts) ")"))
             ((and (or (eq? (first (first ts)) (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
                   (%sql-op? (rest ts) "("))
-              (%sql-windowed (%sql-call (List second (first ts)) (rest (rest ts)))))
+              (%sql-windowed
+                (%sql-unnest-call (%sql-call (List second (first ts)) (rest (rest ts))))))
             ((%sql-name? ts) (%sql-column-name ts))
             (#t (%sql-near ts))))))))
 
@@ -718,6 +720,14 @@
               (pair (list (lit call) name (first args) distinct)
                     (rest (rest args)))
               (%sql-near (rest args)))))))))
+
+; A call read at PARSED, made the unnest node when it is one of unnest
+(def %sql-unnest-call
+  (fn (_ parsed)
+    (let ((call (first parsed)))
+      (if (and (sql-same-name? (List second call) "unnest") (not (List ref 3 call)))
+        (pair (list (lit unnest) (List third call)) (rest parsed))
+        parsed))))
 
 ; A primary and what is written after it: a cast with ::, a place or a
 ; run in brackets, a field after a point, and AT TIME ZONE, which is the
@@ -1032,6 +1042,8 @@
         (pair (list (lit file) (List second (List third ts))
                     (List second (%sql-file-function (List second (first ts)))))
               (List drop 4 ts)))
+      ((and (%sql-word? ts "UNNEST") (%sql-op? (rest ts) "("))
+        (%sql-unnest-call (%sql-call "unnest" (rest (rest ts)))))
       (#t (pair (%sql-name ts) (rest ts))))))
 
 (def %sql-file-function
@@ -1056,10 +1068,21 @@
   (fn (_ table after)
     (match
       ((%sql-kw? after "AS")
-        (pair (list table (%sql-name (rest after))) (rest (rest after))))
+        (%sql-source-columns table (%sql-name (rest after)) (rest (rest after))))
       ((%sql-name? after)
-        (pair (list table (List second (first after))) (rest after)))
+        (%sql-source-columns table (List second (first after)) (rest after)))
       (#t (pair (list table ()) after)))))
+
+; A table under its ALIAS, and the names the alias gives its columns when
+; they follow in parentheses: the table is then (renamed TABLE NAMES)
+(def %sql-source-columns
+  (fn (_ table alias after)
+    (if (%sql-op? after "(")
+      (let ((names (%sql-list (fn (_ ts) (pair (%sql-name ts) (rest ts))) (rest after))))
+        (if (%sql-op? (rest names) ")")
+          (pair (list (list (lit renamed) table (first names)) alias) (rest (rest names)))
+          (%sql-near (rest names))))
+      (pair (list table alias) after))))
 
 ; The kind of join TS starts with and the tokens after its JOIN, or nil:
 ; JOIN alone is an inner one, and OUTER after LEFT, RIGHT or FULL says

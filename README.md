@@ -56,8 +56,12 @@ What is built:
   list_extract list_sum list_min list_max list_avg list_count list_first
   list_last list_any_value array_to_string range generate_series
   string_split struct_pack struct_extract`, and the `array_` names of
-  the `list_` ones. Not yet: `unnest`, `list_distinct`, lambdas, maps,
-  and text read as a list (`'[1, 2]'::INT[]`).
+  the `list_` ones. `unnest(list)` in the list of a `SELECT` is a row for each element, two
+  of them side by side; of a struct, a column for each field. In a
+  `FROM` it is a table, read for each row of the table before it: `FROM
+  t, unnest(t.tags) AS u(tag)`. Not yet: `unnest(x, recursive := true)`,
+  `list_distinct`, lambdas, maps, and text read as a list
+  (`'[1, 2]'::INT[]`).
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one, a REAL when either is one and neither a
@@ -80,7 +84,8 @@ What is built:
   a column list; `UPDATE ... SET ... [WHERE]`; `DELETE FROM ... [WHERE]`;
   `DROP TABLE [IF EXISTS]`. A value is cast to its column's type as it
   goes in.
-- **Queries.** `SELECT [DISTINCT]` with `*` and `t.*`, table aliases,
+- **Queries.** `SELECT [DISTINCT]` with `*` and `t.*`, table aliases
+  that may name the columns too (`AS s(p, q)`),
   `WHERE`, `ORDER BY` with `ASC`, `DESC` and `NULLS FIRST` or `LAST`,
   `LIMIT` and `OFFSET`; and DuckDB's order, `FROM t` alone or
   `FROM t SELECT ...`.
@@ -161,8 +166,8 @@ answered differently.
 
 In this order:
 
-1. DuckDB's friendlier forms: `unnest` and the rest of the list
-   functions; a CSV's separator and its other options; Parquet.
+1. DuckDB's friendlier forms: the rest of the list functions; a CSV's
+   separator and its other options; Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
 3. The servers the rest of the way: a certificate authority of one's own for

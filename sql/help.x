@@ -156,6 +156,8 @@
             "list[2:3]  list[:2]  list[4:]  a run; text takes both too"
             "struct.a  struct['a']          a field"
             "list(x)  array_agg(x)          a group's values as a list"
+            "unnest(list)                   a row for each element, in a SELECT's"
+            "                               list or as a table: FROM t, unnest(t.l) AS u(x)"
             "Lists: len list_contains list_position list_concat || list_append"
             "list_prepend list_sort list_reverse_sort list_reverse flatten"
             "list_slice list_extract list_sum list_min list_max list_avg"
@@ -165,7 +167,8 @@
       (list "SELECT [1, 2, 3][2], len([1, 2]), list_sort([3, 1]);"
             "CREATE TABLE t (id INTEGER, tags VARCHAR[], s STRUCT(a INTEGER, b VARCHAR));"
             "SELECT id, s.a, tags[1] FROM t WHERE list_contains(tags, 'x');"
-            "SELECT b, list(a) FROM t GROUP BY b;"))
+            "SELECT b, list(a) FROM t GROUP BY b;"
+            "SELECT id, unnest(tags) AS tag FROM t;"))
     (list "zones" "Moments, and the time zone that shows them."
       (list "TIMESTAMPTZ '2026-11-17 12:34:56+00'    also TIMESTAMP WITH TIME ZONE"
             "A moment is the same everywhere; the session's zone says what clock"
