@@ -38,15 +38,12 @@
 
 ; A scheme a URL may have, the server's port, the variable its client
 ; reads a password from, whether the database is the user's name when none
-; is written, and the sslmode when none is written.  MySQL and MariaDB
-; servers ask every client for a certificate it may decline to send, and
-; the platform's TLS does not answer that yet, so TLS with them is not
-; tried unless asked for.
+; is written, and the sslmode when none is written.
 (def %sql-schemes
   (list (list "postgres" 5432 "PGPASSWORD" #t "prefer")
         (list "postgresql" 5432 "PGPASSWORD" #t "prefer")
-        (list "mysql" 3306 "MYSQL_PWD" #f "disable")
-        (list "mariadb" 3306 "MYSQL_PWD" #f "disable")))
+        (list "mysql" 3306 "MYSQL_PWD" #f "prefer")
+        (list "mariadb" 3306 "MYSQL_PWD" #f "prefer")))
 
 (def %sql-before
   (fn (_ mark text)

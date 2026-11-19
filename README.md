@@ -20,7 +20,7 @@ its way of showing a result.
 
 ## Status
 
-Pre-release: no release has been cut. Paired with x-lang v0.55.0
+Pre-release: no release has been cut. Paired with x-lang v0.57.0
 (`lang.xon` is the checkable row).
 
 What is built:
@@ -43,7 +43,8 @@ What is built:
   session's zone, the system's to begin with; `AT TIME ZONE` reads a
   timestamp on a zone's clock or shows a moment on one. A day added is
   the same time on the clock the next day. `now()` is a moment. The
-  zones are the system's, read from `/usr/share/zoneinfo` (`sql/zone.x`).
+  zones are the system's, read from `/usr/share/zoneinfo` by the
+  platform's `x/sys/zone`.
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one, a REAL when either is one and neither a
@@ -126,10 +127,9 @@ What is built:
   server has it; `require`, TLS or no connection; `verify-full`, that
   with the server's certificate checked for its name against Mozilla's
   roots. Only `verify-full` knows who the server is. It is TLS 1.3, the
-  platform's (`x/net/tls13`). With PostgreSQL nothing said is `prefer`.
-  **With MySQL and MariaDB TLS is not possible yet,** and nothing said
-  is `disable`: their servers ask every client for a certificate, which
-  the platform's TLS does not answer.
+  platform's (`x/net/tls13`). Nothing said is `prefer`. Over TLS a
+  MySQL server may be given the whole password, which
+  `caching_sha2_password` asks for when it has not the password cached.
 - **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
@@ -145,10 +145,7 @@ In this order:
    other options; Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
-3. The servers the rest of the way: TLS with MySQL and MariaDB, once
-   the platform's TLS answers a request for a client certificate, and
-   with it MySQL's whole-password sign-in, which a MySQL 8 server asks of
-   a user it has not cached; a certificate authority of one's own for
+3. The servers the rest of the way: a certificate authority of one's own for
    `verify-full`; a password asked for at the prompt; the server's tables
    and columns in `.tables`, `.schema` and Tab; a query cancelled with
    ctrl-c.

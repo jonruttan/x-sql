@@ -134,16 +134,13 @@ ready
 ---
     "require"
 
-### when nothing is said it is prefer for PostgreSQL, and disable for MySQL and MariaDB
-
-Their servers ask every client for a certificate, which the platform's TLS
-does not answer yet.
+### when nothing is said it is prefer
 
 ```x
 (%seq (write (list (List ref 6 (sql-url-parse "postgres://me@h")) (List ref 6 (sql-url-parse "mysql://me@h")) (List ref 6 (sql-url-parse "mariadb://me@h")))) (newline))
 ```
 ---
-    ("prefer" "disable" "disable")
+    ("prefer" "prefer" "prefer")
 
 ### a mode there is not
 
