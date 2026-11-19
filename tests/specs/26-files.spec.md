@@ -167,18 +167,6 @@ IO Error: No files found that match the pattern "nope.csv"
 └─────────┴───────┘
 ```
 
-### a list or an object for a value is not built
-
-DuckDB makes the column a STRUCT or a LIST.
-
-```x
-(sql-files "FROM '{F}nested.json'")
-```
----
-```output
-Not implemented Error: a list or an object as a value, in the column "b"
-```
-
 ## files written
 
 ### COPY writes a statement's rows as CSV: a line of names, a field quoted when it must be, a NULL empty

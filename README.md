@@ -57,8 +57,7 @@ What is built:
   list_last list_any_value array_to_string range generate_series
   string_split struct_pack struct_extract`, and the `array_` names of
   the `list_` ones. Not yet: `unnest`, `list_distinct`, lambdas, maps,
-  text read as a list (`'[1, 2]'::INT[]`), and a list or a struct written
-  to a JSON file as JSON.
+  and text read as a list (`'[1, 2]'::INT[]`).
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one, a REAL when either is one and neither a
@@ -99,9 +98,13 @@ What is built:
   `LIMIT` of its own.
 - **Files.** `FROM 'people.csv'` and `FROM 'people.json'`: a CSV or JSON
   file is a table, its columns' types found from its values as DuckDB
-  finds them. `read_csv` and `read_json`. `COPY table TO 'file'`, `COPY
+  finds them. An array in a JSON file is a list and an object a struct,
+  its fields in the order the file first has them; values that are not
+  all one of those are text, where DuckDB has a JSON type. `read_csv` and
+  `read_json`. `COPY table TO 'file'`, `COPY
   (SELECT ...) TO 'file'` and `COPY table FROM 'file'`, as CSV or as
-  JSON, an object a line.
+  JSON, an object a line, a list written as an array and a struct as an
+  object.
 - **Subqueries.** A select statement in parentheses for its one value,
   after `[NOT] IN`, after `[NOT] EXISTS`, and as a table of a `FROM`;
   `WITH name AS (...)`, with the columns named after the name if
@@ -158,9 +161,8 @@ answered differently.
 
 In this order:
 
-1. DuckDB's friendlier forms: the nested values of a JSON file, as lists
-   and structs; `unnest` and the rest of the list functions; a CSV's
-   separator and its other options; Parquet.
+1. DuckDB's friendlier forms: `unnest` and the rest of the list
+   functions; a CSV's separator and its other options; Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
 3. The servers the rest of the way: a certificate authority of one's own for

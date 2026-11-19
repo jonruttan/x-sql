@@ -32,7 +32,7 @@
 (import x/num/tower)
 (import x/num/float)
 (import sql/words sql-lower sql-same-name? sql-binary-ops sql-aggregates
-  sql-window-functions)
+  sql-window-functions sql-keywords)
 (import sql/lex sql-lex)
 (import sql/time
   sql-micros-second sql-micros-minute sql-micros-hour sql-micros-day
@@ -131,8 +131,9 @@
 (def %sql-decimal-name
   (fn (_ t) (Str8 str "(" (List second t) "," (List third t) ")")))
 
-; A name is written bare when it is letters, digits and underscores and
-; does not start with a digit; any other goes in double quotes
+; A name is written bare when it is letters, digits and underscores, does
+; not start with a digit, and is no keyword; any other goes in double
+; quotes
 (def %sql-bare-name?
   (fn (_ name)
     (let ((n (Str8 length name)))
@@ -146,7 +147,11 @@
              (List range 0 n))))))
 
 (def %sql-key-name
-  (fn (_ name) (if (%sql-bare-name? name) name (Str8 append "\"" name "\""))))
+  (fn (_ name)
+    (if (and (%sql-bare-name? name)
+             (not (List includes? (Str8 downcase name) sql-keywords)))
+      name
+      (Str8 append "\"" name "\""))))
 
 (def %sql-type-name
   (fn (self t)
@@ -2274,12 +2279,15 @@
     (method field (self node)
       (let ((args (List third node)))
         (if (sql-pointed? node)
-          (Str8 append (sql-expr-name (first args)) "." (List second (List second args)))
-          (Str8 append "(" (sql-expr-name (first args)) ")." (List second (List second args))))))
+          (Str8 append (sql-expr-name (first args)) "."
+                       (%sql-key-name (List second (List second args))))
+          (Str8 append "(" (sql-expr-name (first args)) ")."
+                       (%sql-key-name (List second (List second args)))))))
     ; A column's field, written column.field
     (method dotted (self node)
       (let ((args (List third node)))
-        (Str8 append (sql-expr-name (first args)) "." (List second (List second args)))))
+        (Str8 append (sql-expr-name (first args)) "."
+                     (%sql-key-name (List second (List second args))))))
     (method struct (self node)
       (Str8 append "struct_pack("
         (Str8 join ", "
@@ -2340,9 +2348,10 @@
       (Str8 append "'" (Str8 replace "'" "''" (List second node)) "'"))
     (method bool (self node) (if (List second node) "true" "false"))
     (method null (self node) "NULL")
+    ; A name that is a keyword is in double quotes
     (method col (self node)
-      (if (null? (List third node)) (List second node)
-        (Str8 append (List third node) "." (List second node))))
+      (if (null? (List third node)) (%sql-key-name (List second node))
+        (Str8 append (%sql-key-name (List third node)) "." (%sql-key-name (List second node)))))
     (method star (self node)
       (if (null? (List second node)) "*" (Str8 append (List second node) ".*")))
     (method subquery (self node)
