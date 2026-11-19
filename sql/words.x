@@ -118,7 +118,7 @@
         (list "INTERVAL" (lit interval) "INTERVAL")))
 
 ; The functions that answer one value for a group of rows
-(def sql-aggregates (list "count" "sum" "min" "max" "avg"))
+(def sql-aggregates (list "count" "sum" "min" "max" "avg" "list" "array_agg"))
 
 (provide sql/words
   sql-lower sql-upper sql-same-name? sql-reserved sql-words sql-constants sql-ops sql-binary-ops sql-type-words

@@ -34,7 +34,7 @@
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
   sql-common-type
   sql-aggregated? sql-aggregate-call? sql-cast
-  sql-windowed? sql-scope-windowed sql-window-aggregate sql-type-name
+  sql-windowed? sql-scope-windowed sql-window-aggregate sql-type-name sql-pointed?
   sql-truth sql-order sql-null? sql-value-text)
 
 ; --- the tables --------------------------------------------------------------
@@ -319,7 +319,40 @@
         ((and (eq? (first e) (lit col)) (not (null? columns)))
           (List second
             (List ref (sql-column-index e columns) columns)))
+        ((sql-pointed? e) (List second (List second (List third e))))
         (#t (sql-expr-name e))))))
+
+; --- a column's field ----------------------------------------------------------
+
+; E with each col node that names a field of a struct column made the
+; call that takes the field: its name before the point is no table of
+; COLUMNS and is a column of them.  A subquery has its own tables.
+(def %sql-dotted
+  (fn (self e columns)
+    (match
+      ((not (pair? e)) e)
+      ((or (eq? (first e) (lit subquery)) (eq? (first e) (lit exists))) e)
+      ((and (eq? (first e) (lit col)) (not (null? (List third e)))
+            (null? (List find (fn (_ c) (str=? (List ref 3 c) (List ref 4 e))) columns))
+            (not (null? (List find
+                          (fn (_ c) (and (str=? (List ref 4 c) (List ref 4 e))
+                                         (not (sql-column-hidden? c))))
+                          columns))))
+        (list (lit call) "struct_extract"
+              (list (sql-column-node (List third e) ()) (list (lit str) (List second e)))
+              #f (list (lit dotted))))
+      (#t (pair (self (first e) columns) (self (rest e) columns))))))
+
+; STMT, a select node, with the fields of struct columns found in every
+; clause but its FROM; as it is when COLUMNS has no struct
+(def %sql-dotted-select
+  (fn (_ stmt columns)
+    (if (List any? (fn (_ c) (and (pair? (List third c)) (eq? (first (List third c)) (lit struct))))
+                   columns)
+      (pair (first stmt)
+        (pair (%sql-dotted (List second stmt) columns)
+          (pair (List third stmt) (%sql-dotted (List drop 3 stmt) columns))))
+      stmt)))
 
 ; --- ORDER BY ----------------------------------------------------------------
 
@@ -978,9 +1011,10 @@
 ; A SELECT's result, (NAMES TYPES ROWS) with each row a list of values, for
 ; the row of OUTER when it is a subquery
 (def %sql-select-result
-  (fn (_ stmt outer)
-    (let ((source (if (null? (List third stmt)) () (%sql-from (List third stmt)))))
+  (fn (_ written outer)
+    (let ((source (if (null? (List third written)) () (%sql-from (List third written)))))
       (let ((columns (if (null? source) () (first source))))
+       (let ((stmt (%sql-dotted-select written columns)))
         (let ((items (%sql-expand (List second stmt) columns)))
           (let ((grouped (%sql-grouped? stmt items))
                 (order (List map (fn (_ term) (%sql-term-expr (first term) items "ORDER"))
@@ -1008,7 +1042,7 @@
                 (list (List map (fn (_ i) (%sql-heading i columns)) items)
                       (if (null? rows) (%sql-item-types items columns grouped outer overs)
                         (List map first (first rows)))
-                      rows))))))))))
+                      rows)))))))))))
 
 ; A select statement's result: a SELECT's, or that of the SELECT a WITH
 ; ends in, its tables made first, each one there for the next.  A name a
