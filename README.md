@@ -10,6 +10,7 @@ its way of showing a result.
     x -l sql -- -c "SELECT 1 + 2 AS three"    # run and exit
     x -l sql -- postgres://me@localhost/shop -c "SELECT version()"
     x -l sql -- mysql://me@localhost/shop -c "SELECT version()"
+    x -l sql -- postgres://me@localhost/shop  # the prompt, on that server
 
     ┌───────┐
     │ three │

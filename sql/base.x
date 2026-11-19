@@ -218,25 +218,28 @@
 
 ; The operands after `x -l sql --`: a server's URL, statements then
 ; going to that server, and -c SQL, as often as wanted.  An error ends the
-; run with status 1.
-(def sql-main
-  (fn (self ops)
+; run with status 1.  With a -c the run ends after the last operand; with
+; none, a URL alone, the session stays on its server and the prompt follows.
+(def %sql-operands
+  (fn (self ops ran)
     (match
-      ((null? ops) (do (sql-disconnect!) (Sys exit 0)))
+      ((null? ops) (when ran (sql-disconnect!) (Sys exit 0)))
       ((and (str=? (first ops) "-c") (not (null? (rest ops))))
         (do
           (guard (e (do (display (sql-error-text e)) (newline) (Sys exit 1)))
             (display (sql-run (List second ops))))
-          (self (rest (rest ops)))))
+          (self (rest (rest ops)) #t)))
       ((Str8 includes? "://" (first ops))
         (do
           (guard (e (do (display (sql-error-text e)) (newline) (Sys exit 1)))
             (sql-connect! (first ops)))
-          (self (rest ops))))
+          (self (rest ops) ran)))
       (#t
         (do
-          (display "usage: x -l sql -- [postgres://|mysql://|mariadb://USER[:PASSWORD]@HOST[:PORT][/DATABASE]] -c SQL [-c SQL]...\n")
+          (display "usage: x -l sql -- [postgres://|mysql://|mariadb://USER[:PASSWORD]@HOST[:PORT][/DATABASE]] [-c SQL]...\n")
           (Sys exit 2))))))
+
+(def sql-main (fn (_ ops) (%sql-operands ops #f)))
 
 (provide sql/base
   sql-version sql-run sql-error-text sql-main sql-url-parse sql-connect!
