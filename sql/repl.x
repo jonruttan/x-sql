@@ -340,26 +340,33 @@
 ; after the last.  A statement runs when the line with its closing
 ; semicolon is read, and the end of the lines closes what is left; a line
 ; starting with a dot, where no statement is open, is a command of the
-; prompt's.
-; The first statement to raise is shown and ends the program, as DuckDB's
-; -f does.  Answers whether every statement ran.
+; prompt's.  A statement that raises is shown; with STOP it ends the
+; program, as DuckDB's -f does, and without the program goes on, as
+; DuckDB does with statements piped to it.  Answers whether every
+; statement ran.
 (def sql-program
-  (fn (_ next)
-    (let ((go (fn (self pending)
+  (fn (_ next stop)
+    (let ((go (fn (self pending ran)
                 (let ((line (next)))
                   (match
-                    ((null? line) (%sql-program-run pending))
+                    ((null? line) (and (%sql-program-run pending) ran))
                     ((and (Str8 starts? "." (Str8 trim line)) (%sql-idle? pending))
-                      (do (sql-eval-line line) (self "")))
+                      (do (sql-eval-line line) (self "" ran)))
                     (#t
                       (let ((text (if (= (Str8 length pending) 0) line
                                     (Str8 append pending "\n" line))))
                         (match
-                          ((not (Str8 includes? ";" line)) (self text))
-                          ((not (%sql-closed? text)) (self text))
-                          ((%sql-program-run text) (self ""))
-                          (#t #f)))))))))
-      (go ""))))
+                          ((not (Str8 includes? ";" line)) (self text ran))
+                          ((not (%sql-closed? text)) (self text ran))
+                          ((%sql-program-run text) (self "" ran))
+                          (stop #f)
+                          (#t (self "" #f))))))))))
+      (go "" #t))))
+
+; A line's bytes, last first, as its text
+(def %sql-line-text
+  (fn (_ bytes)
+    (if (null? bytes) "" (bytes->str (List reverse bytes)))))
 
 ; One line of standard input without its newline; nil at the end
 (def %sql-input-line
@@ -367,18 +374,59 @@
     (let ((go (fn (self bytes)
                 (let ((c (Io read-char)))
                   (match
-                    ((null? c) (if (null? bytes) () (bytes->str (List reverse bytes))))
-                    ((= (char->int c) 10) (bytes->str (List reverse bytes)))
+                    ((null? c) (if (null? bytes) () (%sql-line-text bytes)))
+                    ((= (char->int c) 10) (%sql-line-text bytes))
                     (#t (self (pair (char->int c) bytes))))))))
       (go ()))))
 
-; The program `x -l sql -f FILE` puts on standard input, run, and the run
-; ended: with status 0, or 1 when a statement raised
+; How many bytes are asked of a descriptor at a time
+(def %sql-read-size 4096)
+
+; A function answering the next line read from descriptor FD, without its
+; newline, and nil at the end.  What is read past a line is held for the
+; next.
+(def %sql-descriptor-lines
+  (fn (_ fd)
+    (let ((held (Dict make)))
+      (fn (_)
+        (let ((go (fn (self left bytes)
+                    (match
+                      ((null? left)
+                        (let ((more (Sys fd-read fd %sql-read-size)))
+                          (match
+                            ((not (null? more)) (self more bytes))
+                            ((null? bytes) (do (held del! (lit left)) ()))
+                            (#t (do (held del! (lit left)) (%sql-line-text bytes))))))
+                      ((= (first left) 10)
+                        (do (held set! (lit left) (rest left)) (%sql-line-text bytes)))
+                      (#t (self (rest left) (pair (first left) bytes)))))))
+          (go (held get (lit left)) ()))))))
+
+; The run ended, and its server's session with it: status 0, or 1 when a
+; statement raised
+(def %sql-program-end
+  (fn (_ ran)
+    (sql-disconnect!)
+    (Sys exit (if ran 0 1))))
+
+; The program `x -l sql -f FILE` puts on standard input, run to its first
+; failure
 (def sql-program-main
+  (fn (_) (%sql-program-end (sql-program %sql-input-line #t))))
+
+; The descriptor x.sh keeps the caller's standard input on, its own being
+; the pipe the library arrives by
+(def %sql-caller-input 3)
+
+; Whether statements were piped in: the caller's standard input is no
+; terminal
+(def sql-piped?
+  (fn (_) (not (Sys isatty %sql-caller-input))))
+
+; The statements piped in, every one run
+(def sql-piped-main
   (fn (_)
-    (let ((ran (sql-program %sql-input-line)))
-      (sql-disconnect!)
-      (Sys exit (if ran 0 1)))))
+    (%sql-program-end (sql-program (%sql-descriptor-lines %sql-caller-input) #f))))
 
 (def sql-repl-register!
   (fn (_)
@@ -405,4 +453,4 @@
 
 (provide sql/repl
   sql-eval-line sql-paint sql-marks sql-complete sql-leads?
-  sql-repl-register! sql-program sql-program-main)
+  sql-repl-register! sql-program sql-program-main sql-piped? sql-piped-main)

@@ -13,6 +13,7 @@ its way of showing a result.
     x -l sql -- postgres://me@localhost/shop  # the prompt, on that server
     x -l sql -f report.sql                    # a file of statements
     x -l sql -f report.sql -- postgres://me@localhost/shop
+    echo "SELECT 42 AS answer;" | x -l sql    # statements piped in
 
     ┌───────┐
     │ three │
@@ -156,7 +157,9 @@ What is built:
   `.tables`, `.schema [table]` and `.quit`. `x -l sql -f FILE` runs a
   file of statements and of these commands, here or at a server whose
   URL follows `--`; the first statement that fails ends the run with
-  status 1, as DuckDB's `-f` does.
+  status 1, as DuckDB's `-f` does. Statements piped in are run the same
+  way, except that the run goes on after one that fails and ends with
+  status 1 then, which is also DuckDB's way.
 - **Servers.** `.connect URL` at the prompt, or the URL as an operand,
   sends statements to a server and shows what it answers in the same
   box, headed by the server's own names for its types; an error, a
@@ -188,7 +191,7 @@ In this order:
 1. DuckDB's friendlier forms: a CSV's separator and its other options;
    Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
-   topic for every function, statements on standard input.
+   topic for every function.
 3. The servers the rest of the way: a certificate authority of one's own for
    `verify-full`; a password asked for at the prompt; the server's tables
    and columns in `.tables`, `.schema` and Tab; a query cancelled with
