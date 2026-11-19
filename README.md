@@ -45,6 +45,20 @@ What is built:
   the same time on the clock the next day. `now()` is a moment. The
   zones are the system's, read from `/usr/share/zoneinfo` by the
   platform's `x/sys/zone`.
+- **Lists and structs.** `[1, 2, 3]` and `{'a': 1, 'b': 'x'}`, inside one
+  another to any depth, as values and as columns: `INTEGER[]`,
+  `STRUCT(a INTEGER, b VARCHAR)`. `list[2]`, `list[-1]` and the runs
+  `list[2:3]`, `list[:2]`, `list[4:]`, which text takes too; `struct.a`
+  and `struct['a']`. Compared, sorted and grouped element by element.
+  `list(x)` and `array_agg(x)` gather a group. Functions: `len
+  list_contains list_position list_concat list_append list_prepend
+  list_sort list_reverse_sort list_reverse flatten list_slice
+  list_extract list_sum list_min list_max list_avg list_count list_first
+  list_last list_any_value array_to_string range generate_series
+  string_split struct_pack struct_extract`, and the `array_` names of
+  the `list_` ones. Not yet: `unnest`, `list_distinct`, lambdas, maps,
+  text read as a list (`'[1, 2]'::INT[]`), and a list or a struct written
+  to a JSON file as JSON.
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one, a REAL when either is one and neither a
@@ -144,9 +158,9 @@ answered differently.
 
 In this order:
 
-1. DuckDB's friendlier forms: lists and structs, and with them the
-   nested values of a JSON file; a CSV's separator and its other options;
-   Parquet.
+1. DuckDB's friendlier forms: the nested values of a JSON file, as lists
+   and structs; `unnest` and the rest of the list functions; a CSV's
+   separator and its other options; Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
 3. The servers the rest of the way: a certificate authority of one's own for

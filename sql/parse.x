@@ -92,7 +92,14 @@
 ;                                   its one value
 ;   (in-query E SELECT)             E IN (select statement)
 ;   (exists SELECT)
-;   (call NAME ARGS DISTINCT)   ARGS expressions, or one (star ()) in count(*)
+;   (call NAME ARGS DISTINCT [FORM])
+;                               ARGS expressions, or one (star ()) in count(*).
+;                               FORM, a list starting with a name, marks a
+;                               call made from a form of its own, which a
+;                               heading spells back: (subscript) value[i],
+;                               (slice OPEN-LOW OPEN-HIGH) value[low:high],
+;                               (field) (value).name, (struct) a struct in
+;                               braces or struct_pack(name := value)
 ;   (neg E)  (not E)  (is-null E NEGATED)
 ;   (and A B)  (or A B)
 ;   (bin OP A B)            OP a name from sql/words' sql-binary-ops
@@ -256,8 +263,9 @@
 ; A type: ((TYPE SHOWN) . tokens-left).  A DECIMAL is (decimal WIDTH SCALE),
 ; the scale 0 when only a width is written.  A VARCHAR's length says
 ; nothing.  SHOWN is the name and what was in parentheses after it.
-; A type, and WITH TIME ZONE or WITHOUT TIME ZONE after a TIMESTAMP
-(def %sql-type
+; A type by its name, and WITH TIME ZONE or WITHOUT TIME ZONE after a
+; TIMESTAMP
+(def %sql-type-plain
   (fn (_ ts)
     (let ((type (%sql-type-named ts)))
       (let ((with (%sql-after (rest type) (list "WITH" "TIME" "ZONE")))
@@ -341,6 +349,44 @@
             (rest e)))))
 
 ; CAST(value AS type), TS after the parenthesis
+; One field of a STRUCT type: a name and a type
+(def %sql-struct-field
+  (fn (_ ts)
+    (let ((name (%sql-name ts)))
+      (let ((type (%sql-type (rest ts))))
+        (pair (list name (first type)) (rest type))))))
+
+; A STRUCT's fields, TS after its opening parenthesis: a name and a type
+; each
+(def %sql-struct-type
+  (fn (_ ts)
+    (let ((fields (%sql-list %sql-struct-field ts)))
+      (if (%sql-op? (rest fields) ")")
+        (pair (list (pair (lit struct)
+                      (List map (fn (_ f) (list (first f) (first (List second f))))
+                                (first fields)))
+                    (Str8 append "STRUCT("
+                      (Str8 join ", "
+                        (List map (fn (_ f) (Str8 append (first f) " " (List second (List second f))))
+                                  (first fields)))
+                      ")"))
+              (rest (rest fields)))
+        (%sql-near (rest fields))))))
+
+; A type: a STRUCT of fields or a type by its name, and [] after it, once
+; for each list it is a list of
+(def %sql-type
+  (fn (_ ts)
+    (let ((base (if (and (%sql-word? ts "STRUCT") (%sql-op? (rest ts) "("))
+                  (%sql-struct-type (rest (rest ts)))
+                  (%sql-type-plain ts))))
+      ((fn (self type after)
+         (if (and (%sql-op? after "[") (%sql-op? (rest after) "]"))
+           (self (list (list (lit list) (first type)) (Str8 append (List second type) "[]"))
+                 (rest (rest after)))
+           (pair type after)))
+       (first base) (rest base)))))
+
 (def %sql-cast
   (fn (_ ts)
     (let ((e (%sql-expr ts)))
@@ -401,8 +447,80 @@
         ((%sql-kw? ts "FALSE") (pair (list (lit bool) #f) (rest ts)))
         (#t ())))))
 
-; What an expression is made of: a constant, a form a word opens, what is
-; in parentheses, a call, or a column
+; A list written in brackets, TS after the opening one: the call
+; list_value of its elements
+(def %sql-list-literal
+  (fn (_ ts)
+    (if (%sql-op? ts "]") (pair (list (lit call) "list_value" () #f) (rest ts))
+      (let ((items (%sql-list %sql-expr ts)))
+        (if (%sql-op? (rest items) "]")
+          (pair (list (lit call) "list_value" (first items) #f) (rest (rest items)))
+          (%sql-near (rest items)))))))
+
+; One field of a struct in braces, 'name': value, as (NAME-NODE EXPR)
+(def %sql-struct-entry
+  (fn (_ ts)
+    (if (and (not (null? ts))
+             (or (eq? (first (first ts)) (lit str)) (%sql-name? ts))
+             (%sql-op? (rest ts) ":"))
+      (let ((e (%sql-expr (rest (rest ts)))))
+        (pair (list (list (lit str) (List second (first ts))) (first e)) (rest e)))
+      (%sql-near ts))))
+
+; One argument of struct_pack, name := value, as (NAME-NODE EXPR)
+(def %sql-struct-named
+  (fn (_ ts)
+    (if (and (%sql-name? ts) (%sql-op? (rest ts) ":") (%sql-op? (List drop 2 ts) "="))
+      (let ((e (%sql-expr (List drop 3 ts))))
+        (pair (list (list (lit str) (List second (first ts))) (first e)) (rest e)))
+      (%sql-near ts))))
+
+; A struct, TS after what opens it: the call struct_pack of each field's
+; name and value in turn, marked as the form it is spelled back in
+(def %sql-struct-node
+  (fn (_ read ts close)
+    (let ((entries (%sql-list read ts)))
+      (if (%sql-op? (rest entries) close)
+        (pair (list (lit call) "struct_pack" (List flat-map (fn (_ e) e) (first entries))
+                    #f (list (lit struct)))
+              (rest (rest entries)))
+        (%sql-near (rest entries))))))
+
+; What is in brackets after a value, TS after the opening one: a place,
+; value[i], or a run, value[low:high] or value[low:high:step], either end
+; of which may be left out.  A place is the call array_extract and a run
+; list_slice, each marked as its form; an end left out is a NULL the mark
+; tells from one that was written.
+(def %sql-subscript
+  (fn (_ left ts)
+    (let ((low (if (%sql-op? ts ":") (pair () ts) (%sql-expr ts))))
+      (match
+        ((and (%sql-op? (rest low) "]") (not (null? (first low))))
+          (pair (list (lit call) "array_extract" (list left (first low)) #f
+                      (list (lit subscript)))
+                (rest (rest low))))
+        ((%sql-op? (rest low) ":")
+          (let ((after (rest (rest low))))
+            (let ((high (if (or (%sql-op? after "]") (%sql-op? after ":")) (pair () after)
+                          (%sql-expr after))))
+              (let ((step (if (%sql-op? (rest high) ":") (%sql-expr (rest (rest high)))
+                            (pair () (rest high)))))
+                (if (%sql-op? (rest step) "]")
+                  (pair (list (lit call) "list_slice"
+                              (List append
+                                (list left
+                                      (if (null? (first low)) (list (lit null)) (first low))
+                                      (if (null? (first high)) (list (lit null)) (first high)))
+                                (if (null? (first step)) () (list (first step))))
+                              #f
+                              (list (lit slice) (null? (first low)) (null? (first high))))
+                        (rest (rest step)))
+                  (%sql-near (rest step)))))))
+        (#t (%sql-near (rest low)))))))
+
+; What an expression is made of: a constant, a form a word opens, a list
+; in brackets, a struct in braces, what is in parentheses, a call, or a
+; column
 (def %sql-primary
   (fn (_ ts)
     (when (null? ts) (%sql-near ts))
@@ -414,6 +532,11 @@
             ((and (%sql-op? ts "(") (%sql-query? (rest ts)))
               (%sql-subquery (lit subquery) (rest ts)))
             ((%sql-op? ts "(") (%sql-closed-expr (rest ts)))
+            ((%sql-op? ts "[") (%sql-list-literal (rest ts)))
+            ((%sql-op? ts "{") (%sql-struct-node %sql-struct-entry (rest ts) "}"))
+            ((and (%sql-word? ts "STRUCT_PACK") (%sql-op? (rest ts) "(")
+                  (not (%sql-op? (List drop 2 ts) ")")))
+              (%sql-struct-node %sql-struct-named (List drop 2 ts) ")"))
             ((and (or (eq? (first (first ts)) (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
                   (%sql-op? (rest ts) "("))
               (%sql-windowed (%sql-call (List second (first ts)) (rest (rest ts)))))
@@ -596,8 +719,9 @@
                     (rest (rest args)))
               (%sql-near (rest args)))))))))
 
-; A primary and what is written after it: a cast with ::, and AT TIME
-; ZONE, which is the function timezone of the zone and the value
+; A primary and what is written after it: a cast with ::, a place or a
+; run in brackets, a field after a point, and AT TIME ZONE, which is the
+; function timezone of the zone and the value
 (def %sql-postfix
   (fn (_ ts)
     (let ((e (%sql-primary ts)))
@@ -607,6 +731,14 @@
              ((%sql-op? ts "::")
                (let ((type (%sql-type (rest ts))))
                  (self (pair (lit cast) (pair left (first type))) (rest type))))
+             ((%sql-op? ts "[")
+               (let ((sub (%sql-subscript left (rest ts))))
+                 (self (first sub) (rest sub))))
+             ((and (%sql-op? ts ".") (%sql-name? (rest ts)))
+               (self (list (lit call) "struct_extract"
+                           (list left (list (lit str) (List second (List second ts))))
+                           #f (list (lit field)))
+                     (List drop 2 ts)))
              ((not (null? zoned))
                (let ((zone (%sql-primary (first zoned))))
                  (self (list (lit call) "timezone" (list (first zone) left) #f) (rest zone))))

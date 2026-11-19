@@ -12,7 +12,10 @@
 ; (decimal WIDTH SCALE), and X the x value, nil for NULL.  A decimal's X is
 ; its digits as an integer: 1.50 is 150 at scale 2.  A date, a time and a
 ; timestamp are integers and an interval a list of three, as sql/time has
-; them.  A NULL keeps the type
+; them.  A list's type is (list TYPE) and its X a list of one, the x values
+; of its elements, so that an empty list is not a NULL.  A struct's type is
+; (struct (NAME TYPE) ...) and its X the x values of its fields in that
+; order.  A NULL keeps the type
 ; of the expression it came from; the constant NULL has the type null.
 ;
 ; Five classes hold what is chosen by a name: SqlNode evaluates an
@@ -108,7 +111,10 @@
 (def %sql-least (fn (_ t) (List ref 4 (%sql-row t %sql-int-rows))))
 (def %sql-unsigned? (fn (_ t) (= (%sql-least t) 0)))
 
-(def %sql-decimal? (fn (_ t) (pair? t)))
+(def %sql-decimal? (fn (_ t) (and (pair? t) (eq? (first t) (lit decimal)))))
+(def %sql-list? (fn (_ t) (and (pair? t) (eq? (first t) (lit list)))))
+(def %sql-struct? (fn (_ t) (and (pair? t) (eq? (first t) (lit struct)))))
+(def %sql-nested? (fn (_ t) (or (%sql-list? t) (%sql-struct? t))))
 (def %sql-double? (fn (_ t) (eq? t (lit double))))
 (def %sql-real? (fn (_ t) (eq? t (lit real))))
 
@@ -125,15 +131,50 @@
 (def %sql-decimal-name
   (fn (_ t) (Str8 str "(" (List second t) "," (List third t) ")")))
 
-(def %sql-type-name
-  (fn (_ t)
-    (if (%sql-decimal? t) (Str8 append "DECIMAL" (%sql-decimal-name t))
-      (List second (%sql-row t %sql-type-rows)))))
+; A name is written bare when it is letters, digits and underscores and
+; does not start with a digit; any other goes in double quotes
+(def %sql-bare-name?
+  (fn (_ name)
+    (let ((n (Str8 length name)))
+      (and (> n 0)
+           (not (and (>= (%sql-byte name 0) 48) (<= (%sql-byte name 0) 57)))
+           (List all?
+             (fn (_ i)
+               (let ((b (%sql-byte name i)))
+                 (or (and (>= b 97) (<= b 122)) (and (>= b 65) (<= b 90))
+                     (and (>= b 48) (<= b 57)) (= b 95))))
+             (List range 0 n))))))
 
+(def %sql-key-name
+  (fn (_ name) (if (%sql-bare-name? name) name (Str8 append "\"" name "\""))))
+
+(def %sql-type-name
+  (fn (self t)
+    (match
+      ((%sql-decimal? t) (Str8 append "DECIMAL" (%sql-decimal-name t)))
+      ((%sql-list? t)
+        (Str8 append (if (%sql-null-type? (List second t)) "\"NULL\"" (self (List second t)))
+                     "[]"))
+      ((%sql-struct? t)
+        (Str8 append "STRUCT("
+          (Str8 join ", "
+            (List map
+              (fn (_ f)
+                (Str8 append (%sql-key-name (first f)) " "
+                  (if (%sql-null-type? (List second f)) "\"NULL\"" (self (List second f)))))
+              (rest t)))
+          ")"))
+      (#t (List second (%sql-row t %sql-type-rows))))))
+
+; A struct is headed by its SQL name in lower case, and a list by its
+; element's heading
 (def sql-type-heading
-  (fn (_ t)
-    (if (%sql-decimal? t) (Str8 append "decimal" (%sql-decimal-name t))
-      (List third (%sql-row t %sql-type-rows)))))
+  (fn (self t)
+    (match
+      ((%sql-decimal? t) (Str8 append "decimal" (%sql-decimal-name t)))
+      ((%sql-list? t) (Str8 append (self (List second t)) "[]"))
+      ((%sql-struct? t) (Str8 downcase (%sql-type-name t)))
+      (#t (List third (%sql-row t %sql-type-rows))))))
 
 (def sql-numeric-type? %sql-numeric?)
 (def sql-type-name %sql-type-name)
@@ -229,12 +270,54 @@
     (Str8 append (sql-timestamp-text (%sql-zone-local micros zone))
                  (%sql-offset-text (%sql-zone-seconds micros zone)))))
 
+; The bytes that put a text inside a list or a struct in quotes: a comma,
+; a colon, an equals sign, both quotes, the three pairs of brackets and a
+; backslash
+(def %sql-quoting-bytes (list 44 58 61 34 39 40 41 123 125 91 93 92))
+
+; TEXT as a list or a struct shows it: in single quotes when it is empty,
+; starts or ends with a blank, spells null, or holds one of the bytes
+; above, a quote and a backslash each after a backslash
+(def %sql-nested-quoted
+  (fn (_ text)
+    (let ((n (Str8 length text)))
+      (if (or (= n 0) (= (%sql-byte text 0) 32) (= (%sql-byte text (- n 1)) 32)
+              (Str8 ci=? text "null")
+              (List any? (fn (_ i) (List includes? (%sql-byte text i) %sql-quoting-bytes))
+                         (List range 0 n)))
+        (Str8 append "'" (Str8 replace "'" "\\'" (Str8 replace "\\" "\\\\" text)) "'")
+        text))))
+
+; A value inside a list or a struct
+(def %sql-nested-text
+  (fn (_ v)
+    (let ((t (first v)))
+      (if (or (null? (rest v)) (%sql-nested? t) (%sql-numeric? t) (eq? t (lit boolean)))
+        (sql-value-text v)
+        (%sql-nested-quoted (sql-value-text v))))))
+
+; The values a list holds, each with the list's element type
+(def %sql-elements
+  (fn (_ v) (List map (fn (_ e) (pair (List second (first v)) e)) (first (rest v)))))
+
+; The values a struct holds, each with its field's type
+(def %sql-members
+  (fn (_ v) (List map (fn (_ f e) (pair (List second f) e)) (rest (first v)) (rest v))))
+
 ; A value as a result shows it
 (def sql-value-text
   (fn (_ v)
     (let ((t (first v)) (x (rest v)))
       (match
         ((null? x) "NULL")
+        ((%sql-list? t)
+          (Str8 append "[" (Str8 join ", " (List map %sql-nested-text (%sql-elements v))) "]"))
+        ((%sql-struct? t)
+          (Str8 append "{"
+            (Str8 join ", "
+              (List map (fn (_ f m) (Str8 append "'" (first f) "': " (%sql-nested-text m)))
+                        (rest t) (%sql-members v)))
+            "}"))
         ((eq? t (lit boolean)) (if x "true" "false"))
         ((eq? t (lit varchar)) x)
         ((%sql-double? t) (sql-double-text x))
@@ -287,6 +370,22 @@
         ((List all? (fn (_ t) (equal? t (first known))) known) (first known))
         ((and (List all? %sql-moment-type? known) (List any? %sql-zoned? known))
           (lit timestamptz))
+        ((List all? %sql-list? known)
+          (list (lit list) (sql-common-type (List map (fn (_ t) (List second t)) known))))
+        ((and (List all? %sql-struct? known)
+              (List all?
+                (fn (_ t)
+                  (and (= (List length t) (List length (first known)))
+                       (List all? (fn (_ same) same)
+                         (List map (fn (_ f g) (sql-same-name? (first f) (first g)))
+                                   (rest t) (rest (first known))))))
+                known))
+          (pair (lit struct)
+            (List map
+              (fn (_ fields)
+                (list (first (first fields))
+                      (sql-common-type (List map (fn (_ f) (List second f)) fields))))
+              (List transpose (List map rest known)))))
         ((not (List all? %sql-numeric? known))
           (let ((other (List find (fn (_ t) (not (equal? t (first known)))) known)))
             (error (Str8 str "Binder Error: Cannot mix values of type "
@@ -529,6 +628,39 @@
 
 ; --- comparison --------------------------------------------------------------
 
+; -1, 0 or 1: how two runs of values stand, the first pair that differs
+; deciding and the shorter run first.  Inside a list or a struct a NULL is
+; after every value and beside another NULL.
+(def %sql-order-each
+  (fn (self xs ys)
+    (match
+      ((and (null? xs) (null? ys)) 0)
+      ((null? xs) -1)
+      ((null? ys) 1)
+      (#t
+        (let ((a (first xs)) (b (first ys)))
+          (let ((c (match
+                     ((and (%sql-null? a) (%sql-null? b)) 0)
+                     ((%sql-null? a) 1)
+                     ((%sql-null? b) -1)
+                     (#t (%sql-order a b)))))
+            (if (= c 0) (self (rest xs) (rest ys)) c)))))))
+
+; How a list stands beside a list and a struct beside a struct.  Beside
+; anything else neither stands: the other would have to be made one.
+(def %sql-nested-order
+  (fn (_ a b)
+    (let ((ta (first a)) (tb (first b)))
+      (match
+        ((and (%sql-list? ta) (%sql-list? tb))
+          (%sql-order-each (%sql-elements a) (%sql-elements b)))
+        ((and (%sql-struct? ta) (%sql-struct? tb))
+          (%sql-order-each (%sql-members a) (%sql-members b)))
+        (#t
+          (let ((from (if (%sql-nested? tb) ta tb)) (to (if (%sql-nested? tb) tb ta)))
+            (error (Str8 str "Conversion Error: Unimplemented type for cast ("
+                             (%sql-type-name from) " -> " (%sql-type-name to) ")"))))))))
+
 ; -1, 0 or 1: how two values of one family stand
 (def %sql-order
   (fn (_ a b)
@@ -565,6 +697,7 @@
             (if (< mx my) -1 (if (= mx my) 0 1))))
         ((and (eq? ta (lit boolean)) (eq? tb (lit boolean)))
           (if (eq? x y) 0 (if y -1 1)))
+        ((or (%sql-nested? ta) (%sql-nested? tb)) (%sql-nested-order a b))
         (#t
           (error (Str8 str "Not implemented Error: comparing "
                            (%sql-type-name ta) " with " (%sql-type-name tb))))))))
@@ -605,11 +738,15 @@
     (method div (self a b name) (%sql-quotient a b))
     ; A NULL constant for an operand makes the result one, as DuckDB has it
     (method concat (self a b name)
-      (if (or (eq? (first a) (lit null)) (eq? (first b) (lit null)))
-        (pair (lit null) ())
-        (pair (lit varchar)
-          (if (or (%sql-null? a) (%sql-null? b)) ()
-            (Str8 append (sql-value-text a) (sql-value-text b))))))
+      (match
+        ((or (eq? (first a) (lit null)) (eq? (first b) (lit null)))
+          (pair (lit null) ()))
+        ((or (%sql-list? (first a)) (%sql-list? (first b)))
+          (%sql-lists-joined (list a b)))
+        (#t
+          (pair (lit varchar)
+            (if (or (%sql-null? a) (%sql-null? b)) ()
+              (Str8 append (sql-value-text a) (sql-value-text b)))))))
     (method eq (self a b name) (%sql-compare a b (fn (_ c) (= c 0))))
     (method ne (self a b name) (%sql-compare a b (fn (_ c) (not (= c 0)))))
     (method lt (self a b name) (%sql-compare a b (fn (_ c) (< c 0))))
@@ -866,8 +1003,421 @@
     (let ((zone (sql-zone-find name)))
       (if (null? zone) (error (Str8 str kind " Error: Unknown TimeZone '" name "'!")) zone))))
 
+; --- lists and structs -------------------------------------------------------
+
+; A list in twos: (A B C D) as ((A B) (C D))
+(def %sql-pairs
+  (fn (self l)
+    (if (null? l) () (pair (list (first l) (List second l)) (self (rest (rest l)))))))
+
+; The first of ARGS is a list or a NULL constant, or the function has no
+; such form
+(def %sql-list-first
+  (fn (_ name args)
+    (when (or (null? args)
+              (not (or (%sql-list? (first (first args))) (%sql-null-type? (first (first args))))))
+      (%sql-no-match name args))))
+
+; The characters of a text or the elements of a list, counted
+(def %sql-length
+  (fn (_ name args)
+    (%sql-arity name args (list 1))
+    (let ((a (first args)))
+      (if (%sql-list? (first a))
+        (pair (lit bigint) (if (%sql-null? a) () (List length (first (rest a)))))
+        (do (%sql-texts name args)
+            (pair (lit bigint) (if (%sql-null? a) () (Str length (rest a)))))))))
+
+; An argument that is a place or a count, as an integer; nil for NULL
+(def %sql-place
+  (fn (_ v) (if (%sql-null? v) () (sql-cast v (lit bigint)))))
+
+; The place in a run of N that the SQL place I names, counted from 0: I
+; from 1, or from the end when below zero; nil when it names none
+(def %sql-place-in
+  (fn (_ i n)
+    (let ((at (if (< i 0) (+ n i) (- i 1))))
+      (if (and (>= at 0) (< at n)) at ()))))
+
+; The run of places LOW to HIGH names in a run of N, as (FROM . COUNT)
+; counted from 0: each end from 1, or from the end when below zero, and
+; held inside the run
+(def %sql-run-in
+  (fn (_ low high n)
+    (let ((from (%sql-max 1 (if (< low 0) (+ n low 1) low)))
+          (to (%sql-min n (if (< high 0) (+ n high 1) high))))
+      (pair (- from 1) (%sql-max 0 (+ (- to from) 1))))))
+
+; Every STEP-th of ITEMS, from the first
+(def %sql-stepped
+  (fn (self items step)
+    (if (null? items) ()
+      (pair (first items) (self (List drop step items) step)))))
+
+; The place of the field NAME among FIELDS, from I, or nil
+(def %sql-field-place
+  (fn (self name fields i)
+    (match
+      ((null? fields) ())
+      ((sql-same-name? (first (first fields)) name) i)
+      (#t (self name (rest fields) (+ i 1))))))
+
+; The field KEY of the struct S
+(def %sql-struct-field
+  (fn (_ s key)
+    (let ((i (%sql-field-place key (rest (first s)) 0)))
+      (when (null? i)
+        (error (Str8 str "Binder Error: Could not find key \"" key "\" in struct")))
+      (pair (List second (List ref i (rest (first s))))
+            (if (%sql-null? s) () (List ref i (rest s)))))))
+
+; The I-th element of a list or character of a text, or the field of a
+; struct that a text names
+(def %sql-extract
+  (fn (_ name args)
+    (%sql-arity name args (list 2))
+    (let ((a (first args)) (i (List second args)))
+      (match
+        ((%sql-struct? (first a))
+          (do (unless (eq? (first i) (lit varchar)) (%sql-no-match name args))
+              (%sql-struct-field a (rest i))))
+        ((%sql-list? (first a))
+          (let ((at (%sql-place i)))
+            (pair (List second (first a))
+              (if (or (%sql-null? a) (null? at)) ()
+                (let ((place (%sql-place-in at (List length (first (rest a))))))
+                  (if (null? place) () (List ref place (first (rest a)))))))))
+        ((eq? (first a) (lit varchar))
+          (let ((at (%sql-place i)))
+            (pair (lit varchar)
+              (if (or (%sql-null? a) (null? at)) ()
+                (let ((place (%sql-place-in at (Str length (rest a)))))
+                  (if (null? place) "" (Str sub place 1 (rest a))))))))
+        (#t (%sql-no-match name args))))))
+
+; A run of a list or a text.  OPEN says which ends were not written: such
+; an end is the run's own.  A NULL end that was written makes a NULL.
+(def %sql-slice
+  (fn (_ name args open)
+    (%sql-arity name args (list 3 4))
+    (let ((a (first args))
+          (step (if (null? (List drop 3 args)) 1 (%sql-place (List ref 3 args))))
+          (low (if (first open) 1 (%sql-place (List second args))))
+          (high (if (List second open) -1 (%sql-place (List third args)))))
+      (match
+        ((%sql-list? (first a))
+          (pair (first a)
+            (if (or (%sql-null? a) (null? low) (null? high) (null? step)) ()
+              (let ((run (%sql-run-in low high (List length (first (rest a))))))
+                (when (< step 1)
+                  (error "Not implemented Error: a slice with a step below one"))
+                (list (%sql-stepped
+                        (List take (rest run) (List drop (first run) (first (rest a))))
+                        step))))))
+        ((eq? (first a) (lit varchar))
+          (pair (lit varchar)
+            (if (or (%sql-null? a) (null? low) (null? high)) ()
+              (let ((run (%sql-run-in low high (Str length (rest a)))))
+                (if (> (rest run) 0) (Str sub (first run) (rest run) (rest a)) "")))))
+        (#t (%sql-no-match name args))))))
+
+; The type that lists of TYPES join into, or the error of two that do not
+; go together
+(def %sql-joined-type
+  (fn (_ types)
+    (let ((known (List reject %sql-null-type? types)))
+      (let ((joined (guard (_ ())
+                      (if (List all? %sql-list? known) (sql-common-type types) ()))))
+        (when (null? joined)
+          (let ((other (List find (fn (_ t) (not (equal? t (first known)))) known)))
+            (error (Str8 str "Binder Error: Cannot concatenate "
+                             (if (List all? %sql-list? known) "lists of " "")
+                             "types " (%sql-type-name (first known)) " and "
+                             (%sql-type-name other)
+                             " - an explicit cast is required"))))
+        joined))))
+
+; Lists end to end, in the type they all go into.  A NULL is passed over,
+; and the answer is one when every list is.
+(def %sql-lists-joined
+  (fn (_ args)
+    (let ((t (%sql-joined-type (List map first args)))
+          (held (List reject %sql-null? args)))
+      (pair t
+        (if (or (%sql-null-type? t) (null? held)) ()
+          (list (List flat-map (fn (_ a) (first (sql-cast a t))) held)))))))
+
+; A list with X at one end, in the type both go into
+(def %sql-with-one
+  (fn (_ l x at-end)
+    (let ((t (sql-common-type
+               (list (if (%sql-null-type? (first l)) (lit null) (List second (first l)))
+                     (first x)))))
+      (let ((own (if (%sql-null? l) () (List map (fn (_ e) (sql-cast e t)) (%sql-elements l))))
+            (one (list (sql-cast x t))))
+        (pair (list (lit list) t)
+              (list (if at-end (List append own one) (List append one own))))))))
+
+; ITEMS sorted, DOWN for the greatest first, the NULLs first or last
+(def %sql-list-sorted
+  (fn (_ items down nulls-first)
+    (let ((nulls (List filter %sql-null? items))
+          (sorted (List sort
+                    (fn (_ a b) (if down (> (%sql-order a b) 0) (< (%sql-order a b) 0)))
+                    (List reject %sql-null? items))))
+      (if nulls-first (List append nulls sorted) (List append sorted nulls)))))
+
+; What a word of list_sort says, among CHOICES of (WORD . ANSWER); the
+; answer OTHERWISE when the word is not given
+(def %sql-sort-word
+  (fn (_ arg choices otherwise enum)
+    (if (or (null? arg) (%sql-null? arg)) otherwise
+      (let ((choice (List find (fn (_ c) (Str8 ci=? (first c) (rest arg))) choices)))
+        (when (null? choice)
+          (error (Str8 str "Not implemented Error: Enum value: unrecognized value \""
+                           (Str8 upcase (rest arg)) "\" for enum \"" enum "\"")))
+        (rest choice)))))
+
+(def %sql-sort-ways (list (pair "ASC" #f) (pair "DESC" #t)))
+(def %sql-sort-nulls (list (pair "NULLS FIRST" #t) (pair "NULLS LAST" #f)))
+
+; A function of one list: NULL for a NULL list, else F of its elements.
+; ANSWERS is the type of the answer, or says which it is: list for the
+; list's own, element for its element's.
+(def %sql-of-list
+  (fn (_ name args counts answers f)
+    (%sql-arity name args counts)
+    (%sql-list-first name args)
+    (let ((a (first args)))
+      (if (%sql-null-type? (first a)) (pair (lit null) ())
+        (pair (match
+                ((eq? answers (lit list)) (first a))
+                ((eq? answers (lit element)) (List second (first a)))
+                (#t answers))
+              (if (%sql-null? a) () (f (%sql-elements a))))))))
+
+; The whole numbers from FROM by STEP that are before TO, or up to it
+; when INCLUSIVE
+(def %sql-range
+  (fn (self from to step inclusive)
+    (if (or (= step 0)
+            (if (> step 0) (if inclusive (> from to) (>= from to))
+              (if inclusive (< from to) (<= from to))))
+      ()
+      (pair from (self (+ from step) to step inclusive)))))
+
+(def %sql-ranged
+  (fn (_ name args inclusive)
+    (%sql-arity name args (list 1 2 3))
+    (let ((ns (List map %sql-place args)))
+      (pair (list (lit list) (lit bigint))
+        (if (List any? (fn (_ n) (null? n)) ns) ()
+          (list (match
+                  ((null? (rest ns)) (%sql-range 0 (first ns) 1 inclusive))
+                  ((null? (rest (rest ns)))
+                    (%sql-range (first ns) (List second ns) 1 inclusive))
+                  (#t (%sql-range (first ns) (List second ns) (List third ns) inclusive)))))))))
+
+; The sum of a list's elements, the NULLs left out, as sum adds a column
+(def %sql-list-sum
+  (fn (_ name args)
+    (%sql-arity name args (list 1))
+    (%sql-list-first name args)
+    (let ((a (first args)))
+      (let ((t (if (%sql-null-type? (first a)) (lit null) (List second (first a))))
+            (values (if (%sql-null? a) () (List reject %sql-null? (%sql-elements a)))))
+        (match
+          ((%sql-int? t) (%sql-total (lit hugeint) values (%sql-limit (lit hugeint))))
+          ((%sql-decimal? t)
+            (%sql-total (list (lit decimal) %sql-decimal-width (List third t))
+                        values (sql-pow10 %sql-decimal-width)))
+          ((%sql-float? t)
+            (pair (lit double)
+              (if (null? values) ()
+                (List fold (fn (_ acc v) (+ acc (rest v))) (rest (first values)) (rest values)))))
+          ((%sql-null-type? t) (pair (lit hugeint) ()))
+          (#t (error (Str8 str "Binder Error: No function matches the given name and argument types 'sum("
+                               (%sql-type-name t) ")'."))))))))
+
+; The least or the greatest of a list's elements, the NULLs left out
+(def %sql-list-extreme
+  (fn (_ name args pick)
+    (%sql-of-list name args (list 1) (lit element)
+      (fn (_ es)
+        (let ((held (List reject %sql-null? es)))
+          (if (null? held) ()
+            (rest (List fold (fn (_ best v) (if (pick (%sql-order v best)) v best))
+                             (first held) (rest held)))))))))
+
 (def-class SqlFunction ()
   (static
+    ; Its arguments as a list, in the type they all go into.  A string
+    ; constant beside values of another type is read as one of that type.
+    (method list_value (self args node)
+      (let ((firm (List filter (fn (_ t) (not (null? t)))
+                    (List map (fn (_ a n) (if (eq? (first n) (lit str)) () (first a)))
+                              args (List third node)))))
+        (let ((common (guard (_ (error (Str8 str "Binder Error: Cannot deduce template type 'T' in function: 'list_value("
+                                               (Str8 join ", " (List repeat (List length args) "T"))
+                                               ") -> T[]'")))
+                        (sql-common-type firm))))
+          (let ((t (if (and (%sql-null-type? common)
+                            (not (= (List length firm) (List length args))))
+                     (lit varchar)
+                     common)))
+            (pair (list (lit list) t) (list (List map (fn (_ a) (sql-cast a t)) args)))))))
+    (method list_pack (self args node) (SqlFunction list_value args node))
+    ; Its arguments in twos, a name and a value
+    (method struct_pack (self args node)
+      (when (null? args) (%sql-no-match "struct_pack" args))
+      (let ((pairs (%sql-pairs args)))
+        (pair (pair (lit struct)
+                (List map (fn (_ p) (list (rest (first p)) (first (List second p)))) pairs))
+              (List map (fn (_ p) (rest (List second p))) pairs))))
+    (method struct_extract (self args node)
+      (%sql-arity "struct_extract" args (list 2))
+      (unless (and (%sql-struct? (first (first args)))
+                   (eq? (first (List second args)) (lit varchar)))
+        (%sql-no-match "struct_extract" args))
+      (%sql-struct-field (first args) (rest (List second args))))
+    (method array_extract (self args node) (%sql-extract "array_extract" args))
+    (method list_extract (self args node) (%sql-extract "list_extract" args))
+    (method list_element (self args node) (%sql-extract "list_element" args))
+    (method list_slice (self args node)
+      (let ((form (List drop 4 node)))
+        (%sql-slice "list_slice" args
+          (if (null? form) (list #f #f) (rest (first form))))))
+    (method array_slice (self args node) (%sql-slice "array_slice" args (list #f #f)))
+    ; Whether a list holds a value: NULL when the list or the value is
+    (method list_contains (self args node)
+      (%sql-arity "list_contains" args (list 2))
+      (%sql-list-first "list_contains" args)
+      (let ((l (first args)) (x (List second args)))
+        (pair (lit boolean)
+          (if (or (%sql-null? l) (%sql-null? x)) ()
+            (List any? (fn (_ e) (and (not (%sql-null? e)) (= (%sql-order e x) 0)))
+                       (%sql-elements l))))))
+    (method list_has (self args node) (SqlFunction list_contains args node))
+    (method array_contains (self args node) (SqlFunction list_contains args node))
+    (method array_has (self args node) (SqlFunction list_contains args node))
+    ; Where a list first holds a value, counted from 1; NULL when it does not
+    (method list_position (self args node)
+      (%sql-arity "list_position" args (list 2))
+      (%sql-list-first "list_position" args)
+      (let ((l (first args)) (x (List second args)))
+        (pair (lit integer)
+          (if (or (%sql-null? l) (%sql-null? x)) ()
+            ((fn (self es i)
+               (match
+                 ((null? es) ())
+                 ((and (not (%sql-null? (first es))) (= (%sql-order (first es) x) 0)) i)
+                 (#t (self (rest es) (+ i 1)))))
+             (%sql-elements l) 1)))))
+    (method list_indexof (self args node) (SqlFunction list_position args node))
+    (method array_position (self args node) (SqlFunction list_position args node))
+    (method array_indexof (self args node) (SqlFunction list_position args node))
+    (method list_concat (self args node)
+      (when (null? args) (%sql-no-match "list_concat" args))
+      (%sql-lists-joined args))
+    (method list_cat (self args node) (SqlFunction list_concat args node))
+    (method array_concat (self args node) (SqlFunction list_concat args node))
+    (method array_cat (self args node) (SqlFunction list_concat args node))
+    (method list_append (self args node)
+      (%sql-arity "list_append" args (list 2))
+      (%sql-list-first "list_append" args)
+      (%sql-with-one (first args) (List second args) #t))
+    (method array_append (self args node) (SqlFunction list_append args node))
+    (method array_push_back (self args node) (SqlFunction list_append args node))
+    (method list_prepend (self args node)
+      (%sql-arity "list_prepend" args (list 2))
+      (%sql-list-first "list_prepend" (list (List second args)))
+      (%sql-with-one (List second args) (first args) #f))
+    (method array_prepend (self args node) (SqlFunction list_prepend args node))
+    (method array_push_front (self args node)
+      (%sql-arity "array_push_front" args (list 2))
+      (SqlFunction list_prepend (list (List second args) (first args)) node))
+    ; A list in order: the least first and the NULLs last, unless a word
+    ; after the list says DESC or NULLS FIRST
+    (method list_sort (self args node)
+      (%sql-arity "list_sort" args (list 1 2 3))
+      (let ((down (%sql-sort-word (if (null? (rest args)) () (List second args))
+                                  %sql-sort-ways #f "OrderType"))
+            (nulls-first (%sql-sort-word (if (null? (List drop 2 args)) () (List third args))
+                                         %sql-sort-nulls #f "OrderByNullType")))
+        (%sql-of-list "list_sort" args (list 1 2 3) (lit list)
+          (fn (_ es) (list (List map rest (%sql-list-sorted es down nulls-first)))))))
+    (method array_sort (self args node) (SqlFunction list_sort args node))
+    (method list_reverse_sort (self args node)
+      (%sql-arity "list_reverse_sort" args (list 1 2))
+      (let ((nulls-first (%sql-sort-word (if (null? (rest args)) () (List second args))
+                                         %sql-sort-nulls #f "OrderByNullType")))
+        (%sql-of-list "list_reverse_sort" args (list 1 2) (lit list)
+          (fn (_ es) (list (List map rest (%sql-list-sorted es #t nulls-first)))))))
+    (method array_reverse_sort (self args node) (SqlFunction list_reverse_sort args node))
+    (method list_reverse (self args node)
+      (%sql-of-list "list_reverse" args (list 1) (lit list)
+        (fn (_ es) (list (List reverse (List map rest es))))))
+    (method array_reverse (self args node) (SqlFunction list_reverse args node))
+    ; A list of lists as one list of their elements, a NULL among them
+    ; passed over
+    (method flatten (self args node)
+      (%sql-arity "flatten" args (list 1))
+      (unless (and (%sql-list? (first (first args)))
+                   (%sql-list? (List second (first (first args)))))
+        (%sql-no-match "flatten" args))
+      (let ((a (first args)))
+        (pair (List second (first a))
+          (if (%sql-null? a) ()
+            (list (List flat-map (fn (_ e) (if (%sql-null? e) () (first (rest e))))
+                                 (%sql-elements a)))))))
+    (method range (self args node) (%sql-ranged "range" args #f))
+    (method generate_series (self args node) (%sql-ranged "generate_series" args #t))
+    ; A text cut at each separator; at each character when the separator
+    ; is empty
+    (method string_split (self args node)
+      (%sql-arity "string_split" args (list 2))
+      (%sql-texts "string_split" args)
+      (pair (list (lit list) (lit varchar))
+        (if (%sql-any-null? args) ()
+          (let ((text (rest (first args))) (sep (rest (List second args))))
+            (list (if (= (Str8 length sep) 0)
+                    (List map (fn (_ i) (Str sub i 1 text)) (List range 0 (Str length text)))
+                    (Str8 split sep text)))))))
+    (method str_split (self args node) (SqlFunction string_split args node))
+    (method split (self args node) (SqlFunction string_split args node))
+    (method string_to_array (self args node) (SqlFunction string_split args node))
+    ; A list's elements as text with a separator between, the NULLs left out
+    (method array_to_string (self args node)
+      (%sql-arity "array_to_string" args (list 2))
+      (%sql-list-first "array_to_string" args)
+      (pair (lit varchar)
+        (if (%sql-any-null? args) ()
+          (Str8 join (sql-value-text (List second args))
+            (List map sql-value-text (List reject %sql-null? (%sql-elements (first args))))))))
+    (method list_sum (self args node) (%sql-list-sum "list_sum" args))
+    (method list_min (self args node) (%sql-list-extreme "list_min" args (fn (_ c) (< c 0))))
+    (method list_max (self args node) (%sql-list-extreme "list_max" args (fn (_ c) (> c 0))))
+    (method list_avg (self args node)
+      (%sql-of-list "list_avg" args (list 1) (lit double)
+        (fn (_ es)
+          (let ((held (List reject %sql-null? es)))
+            (if (null? held) ()
+              (/ (List fold (fn (_ acc v) (+ acc (%sql-as-double v))) (Float from 0) held)
+                 (Float from (List length held))))))))
+    (method list_count (self args node)
+      (%sql-of-list "list_count" args (list 1) (lit bigint)
+        (fn (_ es) (List length (List reject %sql-null? es)))))
+    (method list_first (self args node)
+      (%sql-of-list "list_first" args (list 1) (lit element)
+        (fn (_ es) (if (null? es) () (rest (first es))))))
+    (method list_last (self args node)
+      (%sql-of-list "list_last" args (list 1) (lit element)
+        (fn (_ es) (if (null? es) () (rest (first (List reverse es)))))))
+    (method list_any_value (self args node)
+      (%sql-of-list "list_any_value" args (list 1) (lit element)
+        (fn (_ es)
+          (let ((held (List reject %sql-null? es)))
+            (if (null? held) () (rest (first held)))))))
     (method lower (self args node)
       (%sql-text-function "lower" args (list 1) (fn (_ t) (Str8 downcase (first t)))))
     (method upper (self args node)
@@ -885,10 +1435,11 @@
         (fn (_ t)
           (if (= (Str8 length (List second t)) 0) (first t)
             (Str8 replace (List second t) (List third t) (first t))))))
-    (method length (self args node)
-      (%sql-arity "length" args (list 1))
-      (%sql-texts "length" args)
-      (pair (lit bigint) (if (%sql-any-null? args) () (Str length (rest (first args))))))
+    (method length (self args node) (%sql-length "length" args))
+    (method len (self args node) (%sql-length "len" args))
+    (method array_length (self args node)
+      (%sql-list-first "array_length" args)
+      (%sql-length "array_length" args))
     (method starts_with (self args node)
       (%sql-arity "starts_with" args (list 2))
       (%sql-texts "starts_with" args)
@@ -1390,6 +1941,15 @@
                  (%sql-as-double
                    (pair t (List fold (fn (_ acc v) (+ acc (rest v))) 0 values))))
                (Float from (List length values)))))))
+    ; A group's values as a list, the NULLs among them; NULL for no row
+    (method list (self node scope)
+      (%sql-one-argument node)
+      (let ((values (List map (fn (_ member) (sql-eval (first (List third node)) member))
+                              (first (List third scope)))))
+        (pair (list (lit list) (%sql-arg-type node scope))
+          (if (null? values) ()
+            (list (List map rest (if (List ref 3 node) (%sql-once values ()) values)))))))
+    (method array_agg (self node scope) (SqlAggregate list node scope))
     (method min (self node scope)
       (%sql-one-argument node)
       (%sql-extreme node scope (fn (_ c) (< c 0))))
@@ -1585,7 +2145,8 @@
         (pair "coalesce" "COALESCE") (pair "ifnull" "COALESCE")
         (pair "year" "\"year\"") (pair "month" "\"month\"") (pair "day" "\"day\"")
         (pair "hour" "\"hour\"") (pair "minute" "\"minute\"")
-        (pair "second" "\"second\"") (pair "quarter" "\"quarter\"")))
+        (pair "second" "\"second\"") (pair "quarter" "\"quarter\"")
+        (pair "range" "\"range\"")))
 
 (def %sql-call-name
   (fn (_ name)
@@ -1679,6 +2240,55 @@
         (if (null? frame) ()
           (list (%sql-frame-text frame)))))))
 
+; NODE is a field written with points alone: column.field, as the
+; executor marks one, or a field of such a field or of a column named
+; with its table
+(def sql-pointed?
+  (fn (self node)
+    (and (eq? (first node) (lit call)) (not (null? (List drop 4 node)))
+         (let ((form (first (List ref 4 node))) (of (first (List third node))))
+           (or (eq? form (lit dotted))
+               (and (eq? form (lit field))
+                    (or (and (eq? (first of) (lit col)) (not (null? (List third of))))
+                        (self of))))))))
+
+; A call the parser made from a form of its own, spelled as DuckDB spells
+; the form back.  The form is the call node's fifth element, a list
+; starting with its name.
+(def-class SqlForm ()
+  (static
+    (method subscript (self node)
+      (let ((args (List third node)))
+        (Str8 append (sql-expr-name (first args)) "[" (sql-expr-name (List second args)) "]")))
+    ; The ends that were not written are not shown
+    (method slice (self node)
+      (let ((args (List third node)) (open (rest (first (List drop 4 node)))))
+        (Str8 append (sql-expr-name (first args)) "["
+          (if (first open) "" (sql-expr-name (List second args))) ":"
+          (if (List second open) "" (sql-expr-name (List third args)))
+          (if (null? (List drop 3 args)) ""
+            (Str8 append ":" (sql-expr-name (List ref 3 args))))
+          "]")))
+    ; A field of a value in parentheses; of a column named with its table,
+    ; the three names with points between
+    (method field (self node)
+      (let ((args (List third node)))
+        (if (sql-pointed? node)
+          (Str8 append (sql-expr-name (first args)) "." (List second (List second args)))
+          (Str8 append "(" (sql-expr-name (first args)) ")." (List second (List second args))))))
+    ; A column's field, written column.field
+    (method dotted (self node)
+      (let ((args (List third node)))
+        (Str8 append (sql-expr-name (first args)) "." (List second (List second args)))))
+    (method struct (self node)
+      (Str8 append "struct_pack("
+        (Str8 join ", "
+          (List map
+            (fn (_ p) (Str8 append (%sql-key-name (List second (first p))) " := "
+                                   (sql-expr-name (List second p))))
+            (%sql-pairs (List third node))))
+        ")"))))
+
 (def-class SqlName ()
   (static
     ; A count of rows is count() before an OVER, count_star() elsewhere
@@ -1743,15 +2353,19 @@
     (method exists (self node)
       (Str8 append "EXISTS(" (%sql-select-text (List second node)) ")"))
     (method call (self node)
-      (let ((args (List third node)))
-        (if (and (%sql-aggregate? (List second node))
-                 (sql-same-name? (List second node) "count")
-                 (or (null? args) (eq? (first (first args)) (lit star))))
-          "count_star()"
-          (Str8 append (%sql-call-name (List second node)) "("
-                       (if (List ref 3 node) "DISTINCT " "")
-                       (Str8 join ", " (List map sql-expr-name args))
-                       ")"))))
+      (let ((args (List third node)) (form (List drop 4 node)))
+        (match
+          ((not (null? form))
+            ((class-static-ref SqlForm (first (first form))) SqlForm node))
+          ((and (%sql-aggregate? (List second node))
+                (sql-same-name? (List second node) "count")
+                (or (null? args) (eq? (first (first args)) (lit star))))
+            "count_star()")
+          (#t
+            (Str8 append (%sql-call-name (List second node)) "("
+                         (if (List ref 3 node) "DISTINCT " "")
+                         (Str8 join ", " (List map sql-expr-name args))
+                         ")")))))
     (method neg (self node)
       (Str8 append "(-(" (sql-expr-name (List second node)) "))"))
     (method not (self node)
@@ -2061,6 +2675,24 @@
                 (error (Str8 append "Conversion Error: Could not convert string '" x "' to INTERVAL"))
                 read)))
           (#t (%sql-no-cast from t)))))
+    ; Each element as the list's element type
+    (method list (self v t)
+      (if (%sql-list? (first v))
+        (list (List map (fn (_ e) (sql-cast e (List second t))) (%sql-elements v)))
+        (%sql-no-cast (first v) t)))
+    ; Each field of T from the member of its name; NULL when there is none,
+    ; and a member T has no field for is left out
+    (method struct (self v t)
+      (unless (%sql-struct? (first v)) (%sql-no-cast (first v) t))
+      (let ((held (List map (fn (_ f m) (pair (first f) m)) (rest (first v)) (%sql-members v))))
+        (let ((found (List map
+                       (fn (_ f) (List find (fn (_ h) (sql-same-name? (first h) (first f))) held))
+                       (rest t))))
+          (when (List all? (fn (_ h) (null? h)) found)
+            (error (Str8 str "Binder Error: STRUCT to STRUCT cast must have at least one matching member, inputs are ("
+                             (%sql-type-name (first v)) ") and (" (%sql-type-name t) ")")))
+          (List map (fn (_ f h) (if (null? h) () (sql-cast (rest h) (List second f))))
+                    (rest t) found))))
     (method boolean (self v t)
       (let ((from (first v)) (x (rest v)))
         (match
@@ -2075,11 +2707,19 @@
                                (%sql-type-name from) " to BOOLEAN"))))))))
 
 ; The x value of V as the type T holds it
+(def %sql-nested-kind (fn (_ t) (if (%sql-nested? t) (first t) ())))
+
+; The x value of V as the type T holds it.  A list goes into a list and a
+; struct into a struct; text is what either shows.
 (def sql-cast
   (fn (_ v t)
-    (if (%sql-null? v) ()
-      ((class-static-ref SqlCast (if (%sql-decimal? t) (lit decimal) t))
-       SqlCast v t))))
+    (match
+      ((%sql-null? v) ())
+      ((and (not (eq? t (lit varchar))) (not (eq? (first v) (lit varchar)))
+            (not (eq? (%sql-nested-kind (first v)) (%sql-nested-kind t))))
+        (error (Str8 str "Conversion Error: Unimplemented type for cast ("
+                         (%sql-type-name (first v)) " -> " (%sql-type-name t) ")")))
+      (#t ((class-static-ref SqlCast (if (pair? t) (first t) t)) SqlCast v t)))))
 
 (def sql-truth %sql-truth)
 (def sql-order %sql-order)
@@ -2091,4 +2731,4 @@
   sql-aggregated? sql-aggregate-call? sql-common-type sql-cast
   sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
-  sql-type-name sql-numeric-type?)
+  sql-type-name sql-numeric-type? sql-pointed?)
