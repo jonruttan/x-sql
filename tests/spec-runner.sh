@@ -59,6 +59,10 @@ else
 		X_IMG_DIR="$BUNDLE/tests/lib/.images"; export X_IMG_DIR
 	else
 		echo "x-sql: no state image -- the suite boots from source" >&2
+		# The writer's log says which words no image can carry.  A CI run
+		# leaves no file to read, so its last lines go where the run shows them.
+		_log="$BUNDLE/tests/lib/.images/$(basename "$LANG_LIB").log"
+		[ -f "$_log" ] && tail -n 40 "$_log" | sed 's/^/x-sql: image log: /' >&2
 	fi
 fi
 
