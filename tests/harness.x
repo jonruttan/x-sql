@@ -70,3 +70,14 @@
   (fn (_ text)
     (sql (Str8 replace "{S}" sql-scratch (Str8 replace "{F}" sql-fixtures text)))))
 (import x/sys/file)
+(import sql/repl sql-program)
+
+; A program's lines handed out one at a time, as standard input gives them
+(def sql-lines
+  (fn (_ lines)
+    (let ((held (Dict make)))
+      (held set! (lit lines) lines)
+      (fn (_)
+        (let ((left (held get (lit lines))))
+          (if (null? left) ()
+            (do (held set! (lit lines) (rest left)) (first left))))))))

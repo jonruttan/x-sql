@@ -122,6 +122,16 @@ check "sslmode=require"            "TLSv1.3" "mysql://open@$AT?sslmode=require" 
 check "sslmode=disable is in the clear" "│ Ssl_version   │         │" \
 	"mysql://open@$AT?sslmode=disable" -c "$SSL"
 
+# A file of statements, -f FILE, runs at the server in one session; a
+# statement in it may span lines.
+printf '%s\n' "CREATE TEMPORARY TABLE f (a int);" "INSERT INTO f" "  VALUES (4), (5);" \
+	"SELECT max(a) AS top FROM f;" > "$WORK/program.sql"
+got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -f "$WORK/program.sql" -- "mysql://open@$AT" 2>&1 </dev/null)" || true
+case "$got" in
+*"│   5 │"*) echo "ok   a file of statements" ;;
+*) echo "FAIL a file of statements"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
+esac
+
 # A URL with no -c leaves the session on its server and the prompt
 # follows.  The prompt reads a terminal, so the line is typed at one; it
 # asks what only the server answers.

@@ -121,6 +121,16 @@ check "many rows over TLS"     "│ 5000 │" "postgres://trusted@$AT?sslmode=re
 check "verify-full refuses a certificate the server signed for itself" "Tls13: X509:" \
 	"postgres://trusted@$AT?sslmode=verify-full" -c "$SSL"
 
+# A file of statements, -f FILE, runs at the server in one session; a
+# statement in it may span lines.
+printf '%s\n' "CREATE TEMP TABLE f (a int);" "INSERT INTO f" "  VALUES (4), (5);" \
+	"SELECT max(a) AS top FROM f;" > "$WORK/program.sql"
+got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -f "$WORK/program.sql" -- "postgres://trusted@$AT" 2>&1 </dev/null)" || true
+case "$got" in
+*"│   5 │"*) echo "ok   a file of statements" ;;
+*) echo "FAIL a file of statements"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
+esac
+
 # A URL with no -c leaves the session on its server and the prompt
 # follows.  The prompt reads a terminal, so the line is typed at one; it
 # asks what only the server answers.
