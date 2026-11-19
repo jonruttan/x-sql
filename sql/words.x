@@ -71,7 +71,8 @@
 ; the longest literal present.
 (def sql-ops
   (list "(" ")" "," ";" "." "+" "-" "*" "/" "//" "%" "||" "=" "==" "<>"
-        "!=" "<" "<=" ">" ">=" "::" "[" "]" "{" "}" ":" "**" "^"))
+        "!=" "<" "<=" ">" ">=" "::" "[" "]" "{" "}" ":" "**" "^"
+        "&&" "@>" "<@" "->"))
 
 ; A binary operator as written, the name the evaluator knows it by, and how
 ; a column heading spells it.
@@ -83,7 +84,9 @@
         (list "=" (lit eq) "=") (list "==" (lit eq) "=")
         (list "<>" (lit ne) "!=") (list "!=" (lit ne) "!=")
         (list "<" (lit lt) "<") (list "<=" (lit le) "<=")
-        (list ">" (lit gt) ">") (list ">=" (lit ge) ">=")))
+        (list ">" (lit gt) ">") (list ">=" (lit ge) ">=")
+        (list "&&" (lit overlap) "&&") (list "@>" (lit holds) "@>")
+        (list "<@" (lit held) "<@")))
 
 ; A type as written, upper case, the type it names, and how a heading
 ; spells it: nil for as it was written, which is how DuckDB heads a name
