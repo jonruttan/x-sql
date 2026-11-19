@@ -85,6 +85,8 @@
 (def %sql-source
   (fn (_ name alias)
     (match
+      ((and (pair? name) (eq? (first name) (lit renamed)))
+        (%sql-source-renamed (%sql-source (List second name) alias) (List third name)))
       ((and (pair? name) (eq? (first name) (lit file)))
         (%sql-result-source (sql-file-read (List second name) (List third name))
                             (if (null? alias) (sql-file-stem (List second name)) alias)))
@@ -193,14 +195,187 @@
                 (if (null? test) #t
                   (eq? (sql-truth (sql-eval test (sql-scope visible row () ()))) #t))))))))))
 
-; Every table of a FROM, each joined to what is before it
+; --- unnest ------------------------------------------------------------------
+
+; The unnest nodes of NODE, at any depth of its own statement, each once,
+; newest first.  One inside another is not looked for: the inner has no
+; row to be answered on.
+(def %sql-unnests-in
+  (fn (self node found)
+    (match
+      ((not (pair? node)) found)
+      ((eq? (first node) (lit unnest))
+        (do (unless (null? (self (List second node) ()))
+              (error "Binder Error: Nested UNNEST calls are not supported - use UNNEST(x, recursive := true) to unnest multiple levels"))
+            (if (List any? (fn (_ f) (same? f node)) found) found (pair node found))))
+      ((or (eq? (first node) (lit subquery)) (eq? (first node) (lit exists))) found)
+      ((eq? (first node) (lit in-query)) (self (List second node) found))
+      (#t (List fold (fn (_ seen inner) (self inner seen)) found node)))))
+
+; What an unnest's ARGS unnest, in SCOPE: (TYPE . VALUES), the type of an
+; element and the x values of the list's elements, none for a NULL list
+(def %sql-unnest-list
+  (fn (_ args scope)
+    (when (null? args) (error "Binder Error: UNNEST() requires at least one argument"))
+    (unless (null? (rest args))
+      (error "Binder Error: UNNEST - unsupported extra argument, unnest only supports recursive := [true/false], max_depth := # or keep_parent_names := [true/false]"))
+    (let ((v (sql-eval (first args) scope)))
+      (let ((t (first v)))
+        (match
+          ((and (pair? t) (eq? (first t) (lit list)))
+            (pair (List second t) (if (sql-null? v) () (first (rest v)))))
+          ((eq? t (lit null)) (pair (lit null) ()))
+          ((and (pair? t) (eq? (first t) (lit struct)))
+            (error "Not implemented Error: unnest of a struct inside an expression"))
+          (#t (error (Str8 str "Binder Error: UNNEST() can only be applied to lists, structs and NULL, not "
+                               (sql-type-name t)))))))))
+
+; SCOPES with each one once for every place of the longest list its
+; UNNESTS unnest, an unnest's value held in the scope under its node as a
+; window's is.  A shorter list gives NULLs past its end, and a scope whose
+; lists are all empty or NULL is gone.
+(def %sql-unnested
+  (fn (_ scopes unnests outer)
+    (if (null? unnests) scopes
+      (List flat-map
+        (fn (_ given)
+          (let ((scope (if (null? given) (sql-scope () () () outer) given)))
+            (let ((lists (List map (fn (_ u) (%sql-unnest-list (List second u) scope)) unnests)))
+              (let ((n (List fold (fn (_ most l) (if (> (List length (rest l)) most) (List length (rest l)) most))
+                                  0 lists)))
+                (List map
+                  (fn (_ k)
+                    (List fold
+                      (fn (_ held entry)
+                        (sql-scope-windowed held
+                          (pair (first entry)
+                                (pair (first (rest entry))
+                                      (if (< k (List length (rest (rest entry))))
+                                        (List ref k (rest (rest entry)))
+                                        ())))))
+                      scope (List zip unnests lists)))
+                  (List range 0 n))))))
+        scopes))))
+
+; SCOPE with a NULL of its element's type held for each of UNNESTS: what
+; the types of a result with no row are read from
+(def %sql-unnest-nulls
+  (fn (_ scope unnests)
+    (List fold
+      (fn (_ held u)
+        (sql-scope-windowed held
+          (pair u (pair (first (%sql-unnest-list (List second u) scope)) ()))))
+      scope unnests)))
+
+; ITEM, when it is the unnest of a struct, as an item for each of the
+; struct's fields under the field's name; nil when it is not one.  The
+; struct's type is read over a row of NULLs.
+(def %sql-unnest-struct
+  (fn (_ item columns)
+    (let ((e (first item)))
+      (if (and (eq? (first e) (lit unnest)) (not (null? (List second e)))
+               (null? (rest (List second e))))
+        (let ((t (guard (_ ())
+                   (first (sql-eval (first (List second e))
+                            (if (null? columns) ()
+                              (sql-scope columns (%sql-nulls columns) () ())))))))
+          (if (and (pair? t) (eq? (first t) (lit struct)))
+            (List map
+              (fn (_ f)
+                (list (list (lit call) "struct_extract"
+                            (list (first (List second e)) (list (lit str) (first f)))
+                            #f (list (lit field)))
+                      (first f)))
+              (rest t))
+            ()))
+        ()))))
+
+; --- unnest as a table -------------------------------------------------------
+
+; TABLE without the column names an alias gave it, and those names
+(def %sql-table-plain
+  (fn (_ table)
+    (if (and (pair? table) (eq? (first table) (lit renamed))) (List second table) table)))
+
+(def %sql-table-names
+  (fn (_ table)
+    (if (and (pair? table) (eq? (first table) (lit renamed))) (List third table) ())))
+
+(def %sql-unnest-table?
+  (fn (_ table)
+    (let ((plain (%sql-table-plain table)))
+      (and (pair? plain) (eq? (first plain) (lit unnest))))))
+
+; LEFT joined to the unnest TABLE, whose list is read for each row of
+; LEFT: the row once beside each element.  A row whose list is empty or
+; NULL is gone, and in a LEFT JOIN is kept beside a NULL.  ON keeps the
+; pairs it is true of.  The column is named unnest, and so is its table,
+; when an alias does not say.
+(def %sql-unnest-join
+  (fn (_ left table alias kind on outer)
+    (when (List includes? kind (list (lit right) (lit full)))
+      (error "Not implemented Error: unnest in a RIGHT or FULL JOIN"))
+    (let ((args (List second (%sql-table-plain table)))
+          (names (%sql-table-names table))
+          (scope-of (fn (_ row)
+                      (if (and (null? (first left)) (null? outer)) ()
+                        (sql-scope (first left) row () outer)))))
+      (unless (or (null? args) (null? (rest args)))
+        (error (Str8 str "Binder Error: No function matches the given name and argument types 'unnest("
+                         (Str8 join ", "
+                           (List map (fn (_ a) (sql-type-name (first (sql-eval a (scope-of (%sql-nulls (first left)))))))
+                                     args))
+                         ")'.")))
+      (let ((t (first (guard (_ (error "Binder Error: UNNEST requires a single list or array as input"))
+                        (%sql-unnest-list args (scope-of (%sql-nulls (first left))))))))
+        (let ((columns (List append (first left)
+                         (list (sql-column (if (null? alias) "unnest" alias)
+                                           (if (null? names) "unnest" (first names))
+                                           t)))))
+          (pair columns
+            (List flat-map
+              (fn (_ row)
+                (let ((kept (List filter
+                              (fn (_ joined)
+                                (or (null? on)
+                                    (eq? (sql-truth (sql-eval on (sql-scope columns joined () outer))) #t)))
+                              (List map (fn (_ x) (List append row (list x)))
+                                        (rest (%sql-unnest-list args (scope-of row)))))))
+                  (if (and (null? kept) (eq? kind (lit left)))
+                    (list (List append row (list ())))
+                    kept)))
+              (rest left))))))))
+
+; A source with the first of its columns named by NAMES
+(def %sql-source-renamed
+  (fn (_ source names)
+    (when (> (List length names) (List length (first source)))
+      (error (Str8 str "Binder Error: table \"" (first (first (first source))) "\" has "
+                       (List length (first source)) " columns available but "
+                       (List length names) " columns specified")))
+    (pair ((fn (self columns names)
+             (if (null? names) columns
+               (pair (sql-column (first (first columns)) (first names) (List third (first columns)))
+                     (self (rest columns) (rest names)))))
+           (first source) names)
+          (rest source))))
+
+; Every table of a FROM, each joined to what is before it.  An unnest is
+; read for each row of what is before it, and may name a column of OUTER,
+; the row of the statement this one is a subquery of.
 (def %sql-from
-  (fn (_ from)
+  (fn (_ from outer)
     (List fold
       (fn (_ left join)
-        (%sql-join left (%sql-source (List second join) (List third join))
-                   (first join) (List ref 3 join) (List ref 4 join)))
-      (%sql-source (first (first from)) (List second (first from)))
+        (if (%sql-unnest-table? (List second join))
+          (%sql-unnest-join left (List second join) (List third join)
+                            (first join) (List ref 3 join) outer)
+          (%sql-join left (%sql-source (List second join) (List third join))
+                     (first join) (List ref 3 join) (List ref 4 join))))
+      (if (%sql-unnest-table? (first (first from)))
+        (%sql-unnest-join (pair () (list ())) (first (first from)) (List second (first from))
+                          (lit cross) () outer)
+        (%sql-source (first (first from)) (List second (first from))))
       (rest from))))
 
 ; COLUMN is the one ENTRY of a star's list names: (QUALIFIER NAME ...),
@@ -303,7 +478,8 @@
                  (fn (_ item)
                    (if (eq? (first (first item)) (lit star))
                      (%sql-star (first item) columns)
-                     (list item)))
+                     (let ((fields (%sql-unnest-struct item columns)))
+                       (if (null? fields) (list item) fields))))
                  items)))
       (if (null? all)
         (error "Binder Error: SELECT list is empty after resolving * expressions!")
@@ -993,15 +1169,19 @@
 ; a row of NULLs, a group with no rows when GROUPED, and that row the one
 ; row of each of the windows OVERS
 (def %sql-item-types
-  (fn (_ items columns grouped outer overs)
-    (let ((scope (first
-                   (%sql-windowed
-                     (list (match
-                             (grouped (%sql-group-scope columns () outer))
-                             ((and (null? columns) (null? outer)) ())
-                             (#t (sql-scope columns (%sql-nulls columns) () outer))))
-                     overs columns outer))))
-      (List map (fn (_ i) (first (sql-eval (first i) scope))) items))))
+  (fn (_ items columns grouped outer overs unnests)
+    (let ((windowed (first
+                      (%sql-windowed
+                        (list (match
+                                (grouped (%sql-group-scope columns () outer))
+                                ((and (null? columns) (null? outer)) ())
+                                (#t (sql-scope columns (%sql-nulls columns) () outer))))
+                        overs columns outer))))
+      (let ((scope (if (null? unnests) windowed
+                     (%sql-unnest-nulls
+                       (if (null? windowed) (sql-scope () () () outer) windowed)
+                       unnests))))
+        (List map (fn (_ i) (first (sql-eval (first i) scope))) items)))))
 
 ; ROWS with each row once, when DISTINCT
 (def %sql-distinct
@@ -1012,7 +1192,7 @@
 ; the row of OUTER when it is a subquery
 (def %sql-select-result
   (fn (_ written outer)
-    (let ((source (if (null? (List third written)) () (%sql-from (List third written)))))
+    (let ((source (if (null? (List third written)) () (%sql-from (List third written) outer))))
       (let ((columns (if (null? source) () (first source))))
        (let ((stmt (%sql-dotted-select written columns)))
         (let ((items (%sql-expand (List second stmt) columns)))
@@ -1020,9 +1200,10 @@
                 (order (List map (fn (_ term) (%sql-term-expr (first term) items "ORDER"))
                                  (List ref 4 stmt))))
             (let ((qualify (List ref 10 stmt))
+                  (unnests (List reverse (%sql-unnests-in (list items order) ())))
                   (overs (List reverse
                            (%sql-overs-in (list items order (List ref 10 stmt)) ()))))
-            (let ((scopes (%sql-qualified
+            (let ((scopes (%sql-unnested (%sql-qualified
                             (%sql-windowed
                               (if grouped
                                 (%sql-grouped stmt items
@@ -1030,7 +1211,8 @@
                                   columns (%sql-filtered stmt source outer) outer)
                                 (%sql-filtered stmt source outer))
                               overs columns outer)
-                            qualify)))
+                            qualify)
+                            unnests outer)))
               (let ((rows (%sql-page
                             (%sql-distinct
                               (List map
@@ -1040,7 +1222,7 @@
                             (%sql-count (List ref 6 stmt))
                             (%sql-count (List ref 5 stmt)))))
                 (list (List map (fn (_ i) (%sql-heading i columns)) items)
-                      (if (null? rows) (%sql-item-types items columns grouped outer overs)
+                      (if (null? rows) (%sql-item-types items columns grouped outer overs unnests)
                         (List map first (first rows)))
                       rows)))))))))))
 
