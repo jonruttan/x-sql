@@ -212,49 +212,158 @@
       ((eq? (first node) (lit in-query)) (self (List second node) found))
       (#t (List fold (fn (_ seen inner) (self inner seen)) found node)))))
 
+; The names an unnest's arguments may have
+(def %sql-unnest-names (list "recursive" "max_depth" "keep_parent_names"))
+
+; The depth recursive := true unnests to: more levels than a type has
+(def %sql-unnest-every 1000000)
+
+(def %sql-unnest-extra
+  "Binder Error: UNNEST - unsupported extra argument, unnest only supports recursive := [true/false], max_depth := # or keep_parent_names := [true/false]")
+
+(def %sql-named?
+  (fn (_ arg) (and (pair? arg) (eq? (first arg) (lit named)))))
+
+; The value of the argument of NAMED called NAME, which must be a constant;
+; nil when there is none
+(def %sql-unnest-option
+  (fn (_ named name)
+    (let ((arg (List find (fn (_ n) (str=? (sql-lower (List second n)) name)) named)))
+      (if (null? arg) ()
+        (let ((v (guard (_ (error %sql-unnest-extra)) (sql-eval (List third arg) ()))))
+          (when (sql-null? v)
+            (error (Str8 append "Binder Error: UNNEST parameter \"" name "\" cannot be NULL")))
+          v)))))
+
+(def %sql-unnest-flag
+  (fn (_ named name)
+    (let ((v (%sql-unnest-option named name)))
+      (and (not (null? v)) (eq? (sql-cast v (lit boolean)) #t)))))
+
+; An unnest's ARGS apart, as (EXPRS DEPTH KEEP): what is unnested, how
+; many levels of it, and whether a field of a struct inside a struct is
+; named with the fields it is under.  max_depth says the levels, and
+; recursive := true every level when it does not.
+(def %sql-unnest-plan
+  (fn (_ args)
+    (let ((named (List filter %sql-named? args)))
+      (List for-each
+        (fn (_ n)
+          (unless (List includes? (sql-lower (List second n)) %sql-unnest-names)
+            (error (Str8 append "Binder Error: Unsupported parameter \"" (List second n)
+                                "\" for unnest"))))
+        named)
+      (let ((depth (%sql-unnest-option named "max_depth")))
+        (list (List reject %sql-named? args)
+              (match
+                ((not (null? depth))
+                  (let ((n (sql-cast depth (lit uinteger))))
+                    (when (= n 0) (error "Binder Error: UNNEST cannot have a max depth of 0"))
+                    n))
+                ((%sql-unnest-flag named "recursive") %sql-unnest-every)
+                (#t 1))
+              (%sql-unnest-flag named "keep_parent_names"))))))
+
+; The elements ELEMS of a list of type T with DEPTH levels of lists taken
+; off, as (TYPE . VALUES): a list inside is its elements in its place, a
+; NULL or an empty one nothing
+(def %sql-unnest-levels
+  (fn (self t elems depth)
+    (let ((inner (List second t)))
+      (if (and (> depth 1) (pair? inner) (eq? (first inner) (lit list)))
+        (self inner
+              (List flat-map (fn (_ e) (if (null? e) () (first e))) elems)
+              (- depth 1))
+        (pair inner elems)))))
+
 ; What an unnest's ARGS unnest, in SCOPE: (TYPE . VALUES), the type of an
 ; element and the x values of the list's elements, none for a NULL list
 (def %sql-unnest-list
   (fn (_ args scope)
-    (when (null? args) (error "Binder Error: UNNEST() requires at least one argument"))
-    (unless (null? (rest args))
-      (error "Binder Error: UNNEST - unsupported extra argument, unnest only supports recursive := [true/false], max_depth := # or keep_parent_names := [true/false]"))
-    (let ((v (sql-eval (first args) scope)))
-      (let ((t (first v)))
-        (match
-          ((and (pair? t) (eq? (first t) (lit list)))
-            (pair (List second t) (if (sql-null? v) () (first (rest v)))))
-          ((eq? t (lit null)) (pair (lit null) ()))
-          ((and (pair? t) (eq? (first t) (lit struct)))
-            (error "Not implemented Error: unnest of a struct inside an expression"))
-          (#t (error (Str8 str "Binder Error: UNNEST() can only be applied to lists, structs and NULL, not "
-                               (sql-type-name t)))))))))
+    (let ((plan (%sql-unnest-plan args)))
+      (when (null? (first plan)) (error "Binder Error: UNNEST() requires at least one argument"))
+      (unless (null? (rest (first plan))) (error %sql-unnest-extra))
+      (let ((v (sql-eval (first (first plan)) scope)))
+        (let ((t (first v)))
+          (match
+            ((and (pair? t) (eq? (first t) (lit list)))
+              (%sql-unnest-levels t (if (sql-null? v) () (first (rest v))) (List second plan)))
+            ((eq? t (lit null)) (pair (lit null) ()))
+            ((and (pair? t) (eq? (first t) (lit struct)))
+              (error "Not implemented Error: unnest of a struct inside an expression"))
+            (#t (error (Str8 str "Binder Error: UNNEST() can only be applied to lists, structs and NULL, not "
+                                 (sql-type-name t))))))))))
 
-; SCOPES with each one once for every place of the longest list its
-; UNNESTS unnest, an unnest's value held in the scope under its node as a
-; window's is.  A shorter list gives NULLs past its end, and a scope whose
-; lists are all empty or NULL is gone.
+; How many levels of lists an unnest to DEPTH takes off a list of type T
+(def %sql-unnest-depth
+  (fn (self t depth)
+    (let ((inner (List second t)))
+      (if (and (> depth 1) (pair? inner) (eq? (first inner) (lit list)))
+        (+ 1 (self inner (- depth 1)))
+        1))))
+
+; What an unnest's ARGS unnest, in SCOPE, with its levels still on:
+; (LEVELS . ELEMS), one level for what is no list of lists
+(def %sql-unnest-nested
+  (fn (_ args scope)
+    (let ((plan (%sql-unnest-plan args)))
+      (if (or (null? (first plan)) (not (null? (rest (first plan))))) (pair 1 ())
+        (let ((v (sql-eval (first (first plan)) scope)))
+          (if (and (pair? (first v)) (eq? (first (first v)) (lit list)) (not (sql-null? v)))
+            (pair (%sql-unnest-depth (first v) (List second plan)) (first (rest v)))
+            (pair 1 ())))))))
+
+(def %sql-longest
+  (fn (_ lists)
+    (List fold (fn (_ most l) (if (> (List length l) most) (List length l) most)) 0 lists)))
+
+; The element of ELEMS at K, nil past its end
+(def %sql-at
+  (fn (_ elems k) (if (< k (List length elems)) (List ref k elems) ())))
+
+; The rows LISTS unnest to, each list (LEVELS . ELEMS) and each row a value
+; from every list.  Lists of one level go side by side, a shorter one
+; filled out with NULLs.  The lists with the most levels have one taken
+; off first, and the rest are unnested again beside each of their
+; elements, which is how DuckDB answers unnests of unlike depths.
+(def %sql-unnest-rows
+  (fn (self lists)
+    (let ((most (List fold (fn (_ m l) (if (> (first l) m) (first l) m)) 1 lists)))
+      (if (= most 1)
+        (List map
+          (fn (_ k) (List map (fn (_ l) (%sql-at (rest l) k)) lists))
+          (List range 0 (%sql-longest (List map rest lists))))
+        (List flat-map
+          (fn (_ k)
+            (self (List map
+                    (fn (_ l)
+                      (if (= (first l) most)
+                        (let ((e (%sql-at (rest l) k)))
+                          (pair (- most 1) (if (null? e) () (first e))))
+                        l))
+                    lists)))
+          (List range 0
+            (%sql-longest
+              (List map rest (List filter (fn (_ l) (= (first l) most)) lists)))))))))
+
+; SCOPES with each one once for every row its UNNESTS unnest to, an
+; unnest's value held in the scope under its node as a window's is.  A
+; scope whose lists are all empty or NULL is gone.
 (def %sql-unnested
   (fn (_ scopes unnests outer)
     (if (null? unnests) scopes
       (List flat-map
         (fn (_ given)
           (let ((scope (if (null? given) (sql-scope () () () outer) given)))
-            (let ((lists (List map (fn (_ u) (%sql-unnest-list (List second u) scope)) unnests)))
-              (let ((n (List fold (fn (_ most l) (if (> (List length (rest l)) most) (List length (rest l)) most))
-                                  0 lists)))
-                (List map
-                  (fn (_ k)
-                    (List fold
-                      (fn (_ held entry)
-                        (sql-scope-windowed held
-                          (pair (first entry)
-                                (pair (first (rest entry))
-                                      (if (< k (List length (rest (rest entry))))
-                                        (List ref k (rest (rest entry)))
-                                        ())))))
-                      scope (List zip unnests lists)))
-                  (List range 0 n))))))
+            (let ((types (List map (fn (_ u) (first (%sql-unnest-list (List second u) scope))) unnests)))
+              (List map
+                (fn (_ row)
+                  (List fold
+                    (fn (_ held entry) (sql-scope-windowed held entry))
+                    scope
+                    (List map (fn (_ u t x) (pair u (pair t x))) unnests types row)))
+                (%sql-unnest-rows
+                  (List map (fn (_ u) (%sql-unnest-nested (List second u) scope)) unnests))))))
         scopes))))
 
 ; SCOPE with a NULL of its element's type held for each of UNNESTS: what
@@ -267,28 +376,51 @@
           (pair u (pair (first (%sql-unnest-list (List second u) scope)) ()))))
       scope unnests)))
 
-; ITEM, when it is the unnest of a struct, as an item for each of the
-; struct's fields under the field's name; nil when it is not one.  The
-; struct's type is read over a row of NULLs.
+; An item for each field of the struct BASE is, of type T, under the
+; field's name.  With DEPTH past 1 a field that is a struct is its own
+; fields in its place, a level fewer, named after PREFIX when KEEP.
+(def %sql-unnest-fields
+  (fn (self base t depth prefix keep)
+    (List flat-map
+      (fn (_ f)
+        (let ((node (list (lit call) "struct_extract"
+                          (list base (list (lit str) (first f)))
+                          #f (list (lit field))))
+              (name (if keep (Str8 append prefix (first f)) (first f))))
+          (if (and (> depth 1) (pair? (List second f)) (eq? (first (List second f)) (lit struct)))
+            (self node (List second f) (- depth 1) (Str8 append name ".") keep)
+            (list (list node name)))))
+      (rest t))))
+
+; The unnest node E of a value of type T to DEPTH levels, as the items it
+; stands for when what is left under its lists is a struct with a level to
+; spare; nil when it is one column.  EXPR is what E unnests.  A struct
+; under lists is read from E itself, which the row holds an element of.
+(def %sql-unnest-items
+  (fn (self e expr t depth keep listed)
+    (match
+      ((and (> depth 0) (pair? t) (eq? (first t) (lit list)))
+        (self e expr (List second t) (- depth 1) keep #t))
+      ((and (> depth 0) (pair? t) (eq? (first t) (lit struct)))
+        (%sql-unnest-fields (if listed e expr) t depth "" keep))
+      (#t ()))))
+
+; ITEM, when it is an unnest that gives a struct's fields as columns, as
+; an item for each; nil when it is not one.  The type is read over a row
+; of NULLs, and an unnest that cannot be read is left to say why when it
+; is answered.
 (def %sql-unnest-struct
   (fn (_ item columns)
     (let ((e (first item)))
-      (if (and (eq? (first e) (lit unnest)) (not (null? (List second e)))
-               (null? (rest (List second e))))
-        (let ((t (guard (_ ())
-                   (first (sql-eval (first (List second e))
-                            (if (null? columns) ()
-                              (sql-scope columns (%sql-nulls columns) () ())))))))
-          (if (and (pair? t) (eq? (first t) (lit struct)))
-            (List map
-              (fn (_ f)
-                (list (list (lit call) "struct_extract"
-                            (list (first (List second e)) (list (lit str) (first f)))
-                            #f (list (lit field)))
-                      (first f)))
-              (rest t))
-            ()))
-        ()))))
+      (if (not (eq? (first e) (lit unnest))) ()
+        (let ((plan (guard (_ ()) (%sql-unnest-plan (List second e)))))
+          (if (or (null? plan) (null? (first plan)) (not (null? (rest (first plan))))) ()
+            (let ((t (guard (_ ())
+                       (first (sql-eval (first (first plan))
+                                (if (null? columns) ()
+                                  (sql-scope columns (%sql-nulls columns) () ())))))))
+              (%sql-unnest-items e (first (first plan)) t (List second plan)
+                                 (List third plan) #f))))))))
 
 ; --- unnest as a table -------------------------------------------------------
 
@@ -320,6 +452,10 @@
           (scope-of (fn (_ row)
                       (if (and (null? (first left)) (null? outer)) ()
                         (sql-scope (first left) row () outer)))))
+      (let ((named (List find %sql-named? args)))
+        (unless (null? named)
+          (error (Str8 append "Binder Error: Invalid named parameter \"" (List second named)
+                              "\" for function unnest"))))
       (unless (or (null? args) (null? (rest args)))
         (error (Str8 str "Binder Error: No function matches the given name and argument types 'unnest("
                          (Str8 join ", "

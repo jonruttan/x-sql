@@ -15,6 +15,7 @@
 ;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET GROUP HAVING DISTINCT QUALIFY)
 ;       ITEMS   a list of (EXPR ALIAS), ALIAS nil or text; EXPR may be
 ;               (unnest ARGS), a row for each element of a list
+;               (named NAME EXPR), an argument written name := value
 ;               (star QUALIFIER [LISTS]), every column, or every column of
 ;               one table; LISTS, when the star has any, is (EXCLUDES
 ;               REPLACES RENAMES): EXCLUDES of (QUALIFIER NAME), REPLACES
@@ -781,6 +782,15 @@
                 (%sql-window-merged (rest (rest tree)) defs))))
       (#t (pair (self (first tree) defs) (self (rest tree) defs))))))
 
+; One argument of a call: an expression, or name := value, which is
+; (named NAME EXPR), as ((NODE) . tokens-left)
+(def %sql-argument
+  (fn (_ ts)
+    (if (and (%sql-name? ts) (%sql-op? (rest ts) ":") (%sql-op? (List drop 2 ts) "="))
+      (let ((e (%sql-expr (List drop 3 ts))))
+        (pair (list (lit named) (List second (first ts)) (first e)) (rest e)))
+      (%sql-expr ts))))
+
 ; A call's arguments, TS after its opening parenthesis: none, a star, or
 ; expressions, after DISTINCT or not
 (def %sql-call
@@ -792,7 +802,7 @@
               (rest (rest ts))))
       (#t
         (let ((distinct (%sql-kw? ts "DISTINCT")))
-          (let ((args (%sql-list %sql-expr (if distinct (rest ts) ts))))
+          (let ((args (%sql-list %sql-argument (if distinct (rest ts) ts))))
             (if (%sql-op? (rest args) ")")
               (pair (list (lit call) name (first args) distinct)
                     (rest (rest args)))
