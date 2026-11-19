@@ -121,4 +121,32 @@ check "many rows over TLS"     "│ 5000 │" "postgres://trusted@$AT?sslmode=re
 check "verify-full refuses a certificate the server signed for itself" "Tls13: X509:" \
 	"postgres://trusted@$AT?sslmode=verify-full" -c "$SSL"
 
+# A URL with no -c leaves the session on its server and the prompt
+# follows.  The prompt reads a terminal, so the line is typed at one; it
+# asks what only the server answers.
+got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 X_HISTORY= python3 -c '
+import os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+out = b""
+def read(until, limit):
+    global out
+    end = time.time() + limit
+    while until not in out and time.time() < end:
+        if select.select([fd], [], [], 0.5)[0]:
+            try: out += os.read(fd, 65536)
+            except OSError: break
+read(b"sql> ", 120)
+os.write(fd, b"SELECT current_database() AS still_here;\r")
+read(b"shop", 30)
+os.write(fd, b".quit\r")
+time.sleep(1)
+sys.stdout.write(out.decode("utf-8", "replace"))
+' "$X" -q -l sql -- "postgres://trusted@$AT" 2>&1)" || true
+case "$got" in
+*"still_here"*shop*) echo "ok   a URL alone keeps its session for the prompt" ;;
+*) echo "FAIL a URL alone keeps its session for the prompt"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
+esac
+
 exit "$FAILED"
