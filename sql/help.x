@@ -302,7 +302,8 @@
             "A statement ends with a semicolon and may span lines."
             "Tab completes a keyword, a type, a function, a table or a column."
             "x -l sql -f FILE runs a file of statements and commands, and"
-            "stops at the first statement that fails.")
+            "stops at the first statement that fails.  Statements piped in"
+            "are run too, every one of them.")
       (list ".schema t"))))
 
 (def sql-help-topic

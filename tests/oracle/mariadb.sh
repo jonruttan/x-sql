@@ -132,6 +132,13 @@ case "$got" in
 *) echo "FAIL a file of statements"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
 esac
 
+# The same statements piped in.
+got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -- "mysql://open@$AT" 2>&1 <"$WORK/program.sql")" || true
+case "$got" in
+*"│   5 │"*) echo "ok   statements piped in" ;;
+*) echo "FAIL statements piped in"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
+esac
+
 # A URL with no -c leaves the session on its server and the prompt
 # follows.  The prompt reads a terminal, so the line is typed at one; it
 # asks what only the server answers.
