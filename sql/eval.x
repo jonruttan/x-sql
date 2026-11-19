@@ -146,12 +146,19 @@
                      (and (>= b 48) (<= b 57)) (= b 95))))
              (List range 0 n))))))
 
+; Each name's spelling is worked out once: a heading is spelled for every
+; row of some statements, and the keywords are many.
+(def %sql-key-names (Dict make))
+
 (def %sql-key-name
   (fn (_ name)
-    (if (and (%sql-bare-name? name)
-             (not (List includes? (Str8 downcase name) sql-keywords)))
-      name
-      (Str8 append "\"" name "\""))))
+    (unless (%sql-key-names has? name)
+      (%sql-key-names set! name
+        (if (and (%sql-bare-name? name)
+                 (not (List includes? (Str8 downcase name) sql-keywords)))
+          name
+          (Str8 append "\"" name "\""))))
+    (%sql-key-names get name)))
 
 (def %sql-type-name
   (fn (self t)
