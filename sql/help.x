@@ -23,9 +23,12 @@
             "  [WHERE condition] [GROUP BY key, ... | ALL] [HAVING condition]"
             "  [ORDER BY term [ASC | DESC] [NULLS FIRST | LAST], ...]"
             "  [LIMIT count] [OFFSET count]"
-            "An item is an expression, *, or table.*")
+            "An item is an expression, *, or table.*"
+            "A star takes EXCLUDE (column, ...), REPLACE (expression AS column, ...)"
+            "and RENAME (column AS name, ...) after it, in that order.")
       (list "SELECT 1 + 2 AS three;"
-            "SELECT b, count(*) FROM t WHERE a > 1 GROUP BY b ORDER BY 2 DESC;"))
+            "SELECT b, count(*) FROM t WHERE a > 1 GROUP BY b ORDER BY 2 DESC;"
+            "SELECT * EXCLUDE (a) REPLACE (upper(b) AS b) FROM t;"))
     (list "from" "DuckDB's order: the table first."
       (list "FROM table [SELECT ...] [WHERE ...] ..."
             "FROM alone is every column.")

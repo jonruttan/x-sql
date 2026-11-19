@@ -14,7 +14,10 @@
 ; A statement, its head the name sql/exec's SqlStatement knows it by:
 ;   (select ITEMS FROM WHERE ORDER LIMIT OFFSET GROUP HAVING DISTINCT QUALIFY)
 ;       ITEMS   a list of (EXPR ALIAS), ALIAS nil or text; EXPR may be
-;               (star QUALIFIER), every column, or every column of one table
+;               (star QUALIFIER [LISTS]), every column, or every column of
+;               one table; LISTS, when the star has any, is (EXCLUDES
+;               REPLACES RENAMES): EXCLUDES of (QUALIFIER NAME), REPLACES
+;               of (EXPR NAME), RENAMES of (QUALIFIER NAME NEW)
 ;       FROM    nil, or a list: (TABLE ALIAS) first, then a
 ;               (KIND TABLE ALIAS ON USING) for each table joined to what
 ;               is before it, KIND inner, left, right, full or cross, ON
@@ -731,15 +734,117 @@
 (def %sql-and (fn (_ ts) (%sql-logical %sql-not "AND" (lit and) ts)))
 (def %sql-expr (fn (_ ts) (%sql-logical %sql-and "OR" (lit or) ts)))
 
+; A column's name in a star's list: (QUALIFIER NAME), QUALIFIER nil when
+; none is written
+(def %sql-star-name
+  (fn (_ ts)
+    (let ((name (%sql-name ts)))
+      (if (and (%sql-op? (rest ts) ".") (%sql-name? (rest (rest ts))))
+        (pair (list name (%sql-name (rest (rest ts)))) (rest (rest (rest ts))))
+        (pair (list () name) (rest ts))))))
+
+; One entry of a star's REPLACE: expression AS column, as (EXPR NAME)
+(def %sql-star-replace
+  (fn (_ ts)
+    (let ((e (%sql-expr ts)))
+      (if (%sql-kw? (rest e) "AS")
+        (pair (list (first e) (%sql-name (rest (rest e))))
+              (rest (rest (rest e))))
+        (%sql-near (rest e))))))
+
+; One entry of a star's RENAME: column AS name, as (QUALIFIER NAME NEW)
+(def %sql-star-rename
+  (fn (_ ts)
+    (let ((from (%sql-star-name ts)))
+      (if (%sql-kw? (rest from) "AS")
+        (pair (list (first (first from)) (List second (first from))
+                    (%sql-name (rest (rest from))))
+              (rest (rest (rest from))))
+        (%sql-near (rest from))))))
+
+; What READ reads at TS: a parenthesised list of them, or one alone
+(def %sql-star-list
+  (fn (_ read ts)
+    (if (%sql-op? ts "(")
+      (let ((l (%sql-list read (rest ts))))
+        (if (%sql-op? (rest l) ")") (pair (first l) (rest (rest l)))
+          (%sql-near (rest l))))
+      (let ((one (read ts))) (pair (list (first one)) (rest one))))))
+
+; A list of a star names no column twice
+(def %sql-star-distinct
+  (fn (self names seen word)
+    (unless (null? names)
+      (if (List any? (fn (_ s) (sql-same-name? s (first names))) seen)
+        (error (Str8 str "Parser Error: Duplicate entry \"" (first names)
+                         "\" in " word " list"))
+        (self (rest names) (pair (first names) seen) word)))))
+
+; No column is in two lists of a star.  MARK is what stands around the
+; name in the message, which DuckDB writes twice for one pair of lists.
+(def %sql-star-apart
+  (fn (_ a b words mark)
+    (let ((both (List find
+                  (fn (_ n) (List any? (fn (_ m) (sql-same-name? m n)) b)) a)))
+      (unless (null? both)
+        (error (Str8 str "Parser Error: Column " mark both mark
+                         " cannot occur in both " words " list"))))))
+
+; The names a star's list gives with no qualifier
+(def %sql-star-plain
+  (fn (_ entries)
+    (List map (fn (_ e) (List second e))
+              (List filter (fn (_ e) (null? (first e))) entries))))
+
+; TS starts a star's EXCLUDE: the word, or EXCEPT before a column's name
+(def %sql-star-exclude?
+  (fn (_ ts)
+    (or (%sql-word? ts "EXCLUDE")
+        (and (%sql-word? ts "EXCEPT")
+             (or (%sql-name? (rest ts))
+                 (and (%sql-op? (rest ts) "(") (%sql-name? (rest (rest ts)))))))))
+
+; What follows a star: EXCLUDE, REPLACE and RENAME, in that order, each
+; optional.  Nil when there is none of them, else a list holding
+; (EXCLUDES REPLACES RENAMES).
+(def %sql-star-lists
+  (fn (_ ts)
+    (let ((ex (if (%sql-star-exclude? ts)
+                (%sql-star-list %sql-star-name (rest ts))
+                (pair () ts))))
+      (let ((rp (if (%sql-word? (rest ex) "REPLACE")
+                  (%sql-star-list %sql-star-replace (rest (rest ex)))
+                  (pair () (rest ex)))))
+        (let ((rn (if (%sql-word? (rest rp) "RENAME")
+                    (%sql-star-list %sql-star-rename (rest (rest rp)))
+                    (pair () (rest rp)))))
+          (let ((excluded (%sql-star-plain (first ex)))
+                (replaced (List map (fn (_ r) (List second r)) (first rp)))
+                (renamed (%sql-star-plain (first rn))))
+            (%sql-star-distinct excluded () "EXCLUDE")
+            (%sql-star-distinct replaced () "REPLACE")
+            (%sql-star-apart excluded replaced "EXCLUDE and REPLACE" "\"\"")
+            (%sql-star-apart excluded renamed "EXCLUDE and RENAME" "\"")
+            (%sql-star-apart replaced renamed "REPLACE and RENAME" "\"")
+            (pair (if (and (null? (first ex)) (null? (first rp)) (null? (first rn))) ()
+                    (list (list (first ex) (first rp) (first rn))))
+                  (rest rn))))))))
+
+; A star's item, TS after the star, QUALIFIER the table it is of or nil
+(def %sql-star-item
+  (fn (_ qualifier ts)
+    (let ((lists (%sql-star-lists ts)))
+      (pair (list (pair (lit star) (pair qualifier (first lists))) ())
+            (rest lists)))))
+
 ; An expression and its alias: after AS, or a bare name
 (def %sql-item
   (fn (_ ts)
     (match
-      ((%sql-op? ts "*") (pair (list (list (lit star) ()) ()) (rest ts)))
+      ((%sql-op? ts "*") (%sql-star-item () (rest ts)))
       ((and (%sql-name? ts) (%sql-op? (rest ts) ".")
             (%sql-op? (rest (rest ts)) "*"))
-        (pair (list (list (lit star) (List second (first ts))) ())
-              (rest (rest (rest ts)))))
+        (%sql-star-item (List second (first ts)) (rest (rest (rest ts)))))
       (#t (%sql-aliased ts)))))
 
 (def %sql-aliased
