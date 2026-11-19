@@ -300,7 +300,9 @@
             ".schema [table]   the columns of every table, or of one"
             ".quit             leave (.exit and ctrl-d do the same)"
             "A statement ends with a semicolon and may span lines."
-            "Tab completes a keyword, a type, a function, a table or a column.")
+            "Tab completes a keyword, a type, a function, a table or a column."
+            "x -l sql -f FILE runs a file of statements and commands, and"
+            "stops at the first statement that fails.")
       (list ".schema t"))))
 
 (def sql-help-topic

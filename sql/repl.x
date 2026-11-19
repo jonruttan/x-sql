@@ -21,6 +21,8 @@
 (import x/repl/line)
 (import x/repl/lang)
 (import x/tool/syntax)
+(import x/type/io)
+(import x/core/doors char->int)
 (import sql/words
   sql-lower sql-reserved sql-words sql-constants sql-type-words sql-aggregates
   sql-window-functions)
@@ -319,6 +321,65 @@
               (guard (e (do (display (sql-error-text e)) (newline)))
                 (display (sql-run entry))))))))))
 
+; --- a program ---------------------------------------------------------------
+
+; TEXT opens no statement: it is blanks and comments, or nothing
+(def %sql-idle?
+  (fn (_ text)
+    (List all?
+      (fn (_ tok) (or (eq? (first tok) (lit blank)) (eq? (first tok) (lit comment))))
+      (sql-lex text))))
+
+; TEXT's statements run and their results shown: whether none raised
+(def %sql-program-run
+  (fn (_ text)
+    (guard (e (do (display (sql-error-text e)) (newline) #f))
+      (do (display (sql-run text)) #t))))
+
+; A program's lines run in order, NEXT answering the next line and nil
+; after the last.  A statement runs when the line with its closing
+; semicolon is read, and the end of the lines closes what is left; a line
+; starting with a dot, where no statement is open, is a command of the
+; prompt's.
+; The first statement to raise is shown and ends the program, as DuckDB's
+; -f does.  Answers whether every statement ran.
+(def sql-program
+  (fn (_ next)
+    (let ((go (fn (self pending)
+                (let ((line (next)))
+                  (match
+                    ((null? line) (%sql-program-run pending))
+                    ((and (Str8 starts? "." (Str8 trim line)) (%sql-idle? pending))
+                      (do (sql-eval-line line) (self "")))
+                    (#t
+                      (let ((text (if (= (Str8 length pending) 0) line
+                                    (Str8 append pending "\n" line))))
+                        (match
+                          ((not (Str8 includes? ";" line)) (self text))
+                          ((not (%sql-closed? text)) (self text))
+                          ((%sql-program-run text) (self ""))
+                          (#t #f)))))))))
+      (go ""))))
+
+; One line of standard input without its newline; nil at the end
+(def %sql-input-line
+  (fn (_)
+    (let ((go (fn (self bytes)
+                (let ((c (Io read-char)))
+                  (match
+                    ((null? c) (if (null? bytes) () (bytes->str (List reverse bytes))))
+                    ((= (char->int c) 10) (bytes->str (List reverse bytes)))
+                    (#t (self (pair (char->int c) bytes))))))))
+      (go ()))))
+
+; The program `x -l sql -f FILE` puts on standard input, run, and the run
+; ended: with status 0, or 1 when a statement raised
+(def sql-program-main
+  (fn (_)
+    (let ((ran (sql-program %sql-input-line)))
+      (sql-disconnect!)
+      (Sys exit (if ran 0 1)))))
+
 (def sql-repl-register!
   (fn (_)
     (Lang register! "sql"
@@ -344,4 +405,4 @@
 
 (provide sql/repl
   sql-eval-line sql-paint sql-marks sql-complete sql-leads?
-  sql-repl-register!)
+  sql-repl-register! sql-program sql-program-main)
