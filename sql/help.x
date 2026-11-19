@@ -140,7 +140,8 @@
             "column's type is found from its values: whole numbers a BIGINT,"
             "a fraction a DOUBLE, true and false a BOOLEAN, dates a DATE, times"
             "a TIMESTAMP, anything else text.  An empty field and a null are"
-            "NULL.  A file's columns are qualified by its name without its"
+            "NULL.  An array in a JSON file is a list and an object a struct;"
+            "COPY writes them back as those.  A file's columns are qualified by its name without its"
             "ending, or by an alias.  A name ending .json, .ndjson or .jsonl is"
             "JSON, any other CSV, with commas.")
       (list "SELECT name, score FROM 'people.csv' WHERE active ORDER BY score DESC;"

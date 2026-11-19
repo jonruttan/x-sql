@@ -10,12 +10,14 @@
 ; holds, as DuckDB finds them: a column of whole numbers is a BIGINT, one
 ; with a fraction a DOUBLE, one of true and false a BOOLEAN, one of dates a
 ; DATE, one with times a TIMESTAMP, and any other text.  An empty field of
-; a CSV and a null of a JSON are NULL.
+; a CSV and a null of a JSON are NULL.  An array of a JSON file is a list
+; and an object a struct, as sql/eval has those types and values.
 ;
 ; The codecs are the platform's (x/codec/csv, x/codec/json).  A value's
-; kind is read with the bundle's own lexer, and a JSON file's keys, which
-; the codec keeps in no order, are found in the order they first come with
-; a lexer of JSON's own tokens.
+; kind is read with the bundle's own lexer.  A JSON file is read from
+; tokens of its own, the codec reading each string and number, because
+; the codec's objects keep their keys in no order and a struct's fields
+; are in the order the file first has them.
 ;
 ; A format is a static method named for it, of SqlFormat to read and of
 ; SqlWriter to write.
@@ -32,7 +34,7 @@
 (import x/codec/json)
 (import x/sys/file)
 (import sql/lex sql-lex)
-(import sql/eval sql-cast sql-value-text sql-null?)
+(import sql/eval sql-cast sql-value-text sql-null? sql-numeric-type?)
 
 ; --- what a text is ----------------------------------------------------------
 
@@ -154,8 +156,8 @@
 ; The bytes of a JSON number, and of true, false and null
 (def %sql-json-word (list (pair 48 57) (pair 65 90) (pair 97 122) 43 45 46))
 
-; JSON's tokens, for finding an object's keys in the order they come: a
-; string with its escapes, the six marks, and a number or a word
+; JSON's tokens: a string with its escapes, the six marks, and a number or
+; a word
 (def %sql-json-lexer
   (Lexer make
     (list (Lexer skip " \t\r\n")
@@ -164,59 +166,239 @@
           (Lexer run (lit word) %sql-json-word %sql-json-word)
           (Lexer any (lit other)))))
 
-; The keys of the objects at DEPTH in TOKENS, each once, in the order they
-; first come.  OPEN holds the brackets not yet closed, innermost first;
-; SEEN the keys so far, newest first.
-(def %sql-json-keys
-  (fn (self tokens open depth seen)
-    (if (null? tokens) (List reverse seen)
-      (let ((tok (first tokens)) (after (rest tokens)))
-        (let ((text (List second tok)))
-          (match
-            ((and (eq? (first tok) (lit mark)) (or (str=? text "{") (str=? text "[")))
-              (self after (pair text open) depth seen))
-            ((and (eq? (first tok) (lit mark)) (or (str=? text "}") (str=? text "]")))
-              (self after (if (null? open) () (rest open)) depth seen))
-            ((and (eq? (first tok) (lit str)) (not (null? open)) (str=? (first open) "{")
-                  (= (List length open) depth)
-                  (not (null? after)) (eq? (first (first after)) (lit mark))
-                  (str=? (List second (first after)) ":"))
-              (let ((key (Json parse text)))
-                (self after open depth (if (List includes? key seen) seen (pair key seen)))))
-            (#t (self after open depth seen))))))))
+(def %sql-json-malformed
+  (fn (_) (error "Invalid Input Error: Malformed JSON")))
 
-; A value of a JSON object as (VALUE . KIND).  A string that is a date or
-; a timestamp is one; any other string is text, a number in it too.
-(def %sql-json-value
-  (fn (_ x name)
-    (match
-      ((eq? x (lit null)) (pair (pair (lit varchar) ()) ()))
-      ((or (eq? x #t) (eq? x #f)) (pair (pair (lit boolean) x) (lit boolean)))
-      ((str? x)
-        (let ((kind (%sql-kind x)))
-          (pair (pair (lit varchar) x)
-                (if (or (eq? kind (lit date)) (eq? kind (lit timestamp))) kind (lit text)))))
-      ((Float float? x) (pair (pair (lit double) x) (lit number)))
-      ((or (pair? x) (null? x) (Dict dict? x))
-        (error (Str8 append "Not implemented Error: a list or an object as a value, in the column \""
-                            name "\"")))
-      (#t (pair (pair (lit hugeint) x) (lit integer))))))
+(def %sql-json-mark?
+  (fn (_ tokens text)
+    (and (not (null? tokens)) (eq? (first (first tokens)) (lit mark))
+         (str=? (List second (first tokens)) text))))
+
+; A JSON value read from TOKENS, as (VALUE . tokens-left).  A string, a
+; number and a boolean are the codec's; a null is the symbol null; an
+; array is (array VALUE ...) and an object (object (KEY . VALUE) ...), its
+; keys in the order they are written, which the codec's own objects do
+; not keep.
+(def %sql-json-read
+  (fn (_ tokens)
+    (when (null? tokens) (%sql-json-malformed))
+    (let ((tag (first (first tokens))) (text (List second (first tokens)))
+          (after (rest tokens)))
+      (match
+        ((or (eq? tag (lit str)) (eq? tag (lit word)))
+          (pair (guard (_ (%sql-json-malformed)) (Json parse text)) after))
+        ((%sql-json-mark? tokens "[") (%sql-json-items after ()))
+        ((%sql-json-mark? tokens "{") (%sql-json-fields after ()))
+        (#t (%sql-json-malformed))))))
+
+; An array's values, TOKENS after its bracket; ACC holds them newest first
+(def %sql-json-items
+  (fn (self tokens acc)
+    (if (%sql-json-mark? tokens "]")
+      (pair (pair (lit array) (List reverse acc)) (rest tokens))
+      (let ((v (%sql-json-read tokens)))
+        (match
+          ((%sql-json-mark? (rest v) ",") (self (rest (rest v)) (pair (first v) acc)))
+          ((%sql-json-mark? (rest v) "]")
+            (pair (pair (lit array) (List reverse (pair (first v) acc))) (rest (rest v))))
+          (#t (%sql-json-malformed)))))))
+
+; An object's keys and values, TOKENS after its brace; ACC holds them
+; newest first.  Of a key written twice the first is kept.
+(def %sql-json-fields
+  (fn (self tokens acc)
+    (if (%sql-json-mark? tokens "}")
+      (pair (pair (lit object) (List reverse acc)) (rest tokens))
+      (do
+        (unless (and (not (null? tokens)) (eq? (first (first tokens)) (lit str))
+                     (%sql-json-mark? (rest tokens) ":"))
+          (%sql-json-malformed))
+        (let ((key (Json parse (List second (first tokens))))
+              (v (%sql-json-read (rest (rest tokens)))))
+          (let ((held (if (List any? (fn (_ f) (str=? (first f) key)) acc) acc
+                        (pair (pair key (first v)) acc))))
+            (match
+              ((%sql-json-mark? (rest v) ",") (self (rest (rest v)) held))
+              ((%sql-json-mark? (rest v) "}")
+                (pair (pair (lit object) (List reverse held)) (rest (rest v))))
+              (#t (%sql-json-malformed)))))))))
+
+(def %sql-json-array? (fn (_ x) (and (pair? x) (eq? (first x) (lit array)))))
+(def %sql-json-object? (fn (_ x) (and (pair? x) (eq? (first x) (lit object)))))
+
+; Every value TOKENS hold, one after another
+(def %sql-json-values
+  (fn (self tokens acc)
+    (if (null? tokens) (List reverse acc)
+      (let ((v (%sql-json-read tokens)))
+        (self (rest v) (pair (first v) acc))))))
 
 ; The objects of a JSON text: those of the array it is, the one it is, or
-; one a line
+; one after another, as a file of one a line has them
 (def %sql-json-objects
   (fn (_ text)
-    (let ((whole (guard (_ (lit lines)) (Json parse text))))
-      (let ((objects (match
-                       ((eq? whole (lit lines))
-                         (List map (fn (_ line) (Json parse line))
-                           (List filter (fn (_ line) (> (Str8 length (Str8 trim line)) 0))
-                                        (Str8 split "\n" text))))
-                       ((Dict dict? whole) (list whole))
-                       (#t whole))))
-        (unless (List all? (fn (_ o) (Dict dict? o)) objects)
+    (let ((values (%sql-json-values (%sql-json-lexer read-str text) ())))
+      (let ((objects (if (and (not (null? values)) (null? (rest values))
+                              (%sql-json-array? (first values)))
+                       (rest (first values))
+                       values)))
+        (unless (List all? %sql-json-object? objects)
           (error "Invalid Input Error: a JSON file is read as a table when it holds objects"))
         objects))))
+
+; A value as JSON text with nothing between its marks
+(def %sql-json-emit
+  (fn (self x)
+    (match
+      ((%sql-json-array? x)
+        (Str8 append "[" (Str8 join "," (List map self (rest x))) "]"))
+      ((%sql-json-object? x)
+        (Str8 append "{"
+          (Str8 join ","
+            (List map (fn (_ f) (Str8 append (Json emit (first f)) ":" (self (rest f))))
+                      (rest x)))
+          "}"))
+      (#t (Json emit x)))))
+
+; --- what a JSON column holds -------------------------------------------------
+
+; A shape says what the values of a column, or of a place inside one, are:
+; nil when there is none but null, (scalar KIND ...) for the kinds of
+; scalars, (list SHAPE) for arrays, (struct (KEY . SHAPE) ...) for objects
+; with their keys in the order they first come, and the symbol mixed when
+; they are not all one of those.
+
+(def %sql-2^63 9223372036854775808)
+
+; A scalar's kind.  A whole number too wide for a BIGINT is a number with
+; a fraction, as DuckDB reads one.  A string that is a date or a
+; timestamp is one; any other string is text, a number in it too.
+(def %sql-json-kind
+  (fn (_ x)
+    (match
+      ((or (eq? x #t) (eq? x #f)) (lit boolean))
+      ((str? x)
+        (let ((kind (%sql-kind x)))
+          (if (or (eq? kind (lit date)) (eq? kind (lit timestamp))) kind (lit text))))
+      ((Float float? x) (lit number))
+      ((and (< x %sql-2^63) (>= x (- 0 %sql-2^63))) (lit integer))
+      (#t (lit number)))))
+
+(def %sql-shape-fields
+  (fn (_ as bs)
+    (List append
+      (List map
+        (fn (_ f)
+          (let ((g (List find (fn (_ g) (str=? (first g) (first f))) bs)))
+            (pair (first f) (if (null? g) (rest f) (%sql-shape-merged (rest f) (rest g))))))
+        as)
+      (List reject (fn (_ g) (List any? (fn (_ f) (str=? (first f) (first g))) as)) bs))))
+
+; The shape that takes the values of both A and B
+(def %sql-shape-merged
+  (fn (self a b)
+    (match
+      ((null? a) b)
+      ((null? b) a)
+      ((or (eq? a (lit mixed)) (eq? b (lit mixed))) (lit mixed))
+      ((not (eq? (first a) (first b))) (lit mixed))
+      ((eq? (first a) (lit scalar))
+        (pair (lit scalar)
+          (List append (rest a)
+            (List reject (fn (_ k) (List includes? k (rest a))) (rest b)))))
+      ((eq? (first a) (lit list)) (list (lit list) (self (List second a) (List second b))))
+      (#t (pair (lit struct) (%sql-shape-fields (rest a) (rest b)))))))
+
+; The shape of one value.  An object with no key has no fields to be a
+; struct of, and is mixed.
+(def %sql-json-shape
+  (fn (self x)
+    (match
+      ((eq? x (lit null)) ())
+      ((%sql-json-array? x)
+        (list (lit list)
+          (List fold (fn (_ acc e) (%sql-shape-merged acc (self e))) () (rest x))))
+      ((%sql-json-object? x)
+        (if (null? (rest x)) (lit mixed)
+          (pair (lit struct) (List map (fn (_ f) (pair (first f) (self (rest f)))) (rest x)))))
+      (#t (list (lit scalar) (%sql-json-kind x))))))
+
+; The type of a shape, as sql/eval has types: a list of its elements'
+; type, a struct of its fields', the type of a scalar's kinds, and text
+; for what is mixed or nothing but null
+(def %sql-shape-type
+  (fn (self shape)
+    (match
+      ((or (null? shape) (eq? shape (lit mixed))) (lit varchar))
+      ((eq? (first shape) (lit list)) (list (lit list) (self (List second shape))))
+      ((eq? (first shape) (lit struct))
+        (pair (lit struct) (List map (fn (_ f) (list (first f) (self (rest f)))) (rest shape))))
+      (#t (%sql-column-type (%sql-kinds-present (rest shape)))))))
+
+; A scalar as one of sql/eval's values
+(def %sql-json-scalar
+  (fn (_ x)
+    (match
+      ((or (eq? x #t) (eq? x #f)) (pair (lit boolean) x))
+      ((str? x) (pair (lit varchar) x))
+      ((Float float? x) (pair (lit double) x))
+      (#t (pair (lit hugeint) x)))))
+
+; The x value of X as the type T, which SHAPE gave: a list boxed and a
+; struct's fields in the type's order, as sql/eval holds them.  What is
+; mixed is its JSON text.
+(def %sql-json-x
+  (fn (self x shape t)
+    (match
+      ((eq? x (lit null)) ())
+      ((eq? shape (lit mixed)) (%sql-json-emit x))
+      ((eq? (first shape) (lit list))
+        (list (List map (fn (_ e) (self e (List second shape) (List second t))) (rest x))))
+      ((eq? (first shape) (lit struct))
+        (List map
+          (fn (_ f field)
+            (let ((held (List find (fn (_ h) (str=? (first h) (first f))) (rest x))))
+              (if (null? held) () (self (rest held) (rest f) (List second field)))))
+          (rest shape) (rest t)))
+      (#t (sql-cast (%sql-json-scalar x) t)))))
+
+; X as text, for a column whose values do not all go into its type: a
+; scalar as it is shown, a list or an object as its JSON text
+(def %sql-json-plain
+  (fn (_ x)
+    (match
+      ((eq? x (lit null)) ())
+      ((pair? x) (%sql-json-emit x))
+      (#t (sql-cast (%sql-json-scalar x) (lit varchar))))))
+
+; A column of a JSON file from its VALUES, as (TYPE . values).  When a
+; value does not go into the type its kind promised, a day there is not,
+; the column is text.
+(def %sql-json-column
+  (fn (_ values)
+    (let ((shape (List fold (fn (_ acc x) (%sql-shape-merged acc (%sql-json-shape x)))
+                            () values)))
+      (let ((t (%sql-shape-type shape)))
+        (let ((xs (guard (_ ())
+                    (list (List map (fn (_ x) (%sql-json-x x shape t)) values)))))
+          (if (null? xs)
+            (pair (lit varchar)
+                  (List map (fn (_ x) (pair (lit varchar) (%sql-json-plain x))) values))
+            (pair t (List map (fn (_ x) (pair t x)) (first xs)))))))))
+
+; The keys of OBJECTS, each once, in the order they first come
+(def %sql-json-names
+  (fn (_ objects)
+    (let ((seen (Dict make)))
+      (List reverse
+        (List fold
+          (fn (_ names o)
+            (List fold
+              (fn (_ acc f)
+                (if (seen has? (first f)) acc
+                  (do (seen set! (first f) #t) (pair (first f) acc))))
+              names (rest o)))
+          () objects)))))
 
 ; --- reading -----------------------------------------------------------------
 
@@ -242,21 +424,19 @@
                     (%sql-as-rows (List second typed))))))))
     (method json (self text)
       (let ((objects (%sql-json-objects text)))
-        (let ((names (%sql-json-keys (%sql-json-lexer read-str text) ()
-                       (if (Str8 starts? "[" (Str8 trim text)) 2 1) ())))
+        (let ((names (%sql-json-names objects)))
           (when (null? names) (error "Invalid Input Error: the JSON file holds no object with a key"))
-          (let ((typed (%sql-typed-columns
-                         (List map
+          (let ((columns (List map
                            (fn (_ name)
-                             (List map
-                               (fn (_ o)
-                                 (if (o has? name) (%sql-json-value (o get name) name)
-                                   (pair (pair (lit varchar) ()) ())))
-                               objects))
-                           names)
-                         (List repeat (List length names) sql-value-text))))
-            (list names (first typed)
-                  (%sql-as-rows (List second typed)))))))))
+                             (%sql-json-column
+                               (List map
+                                 (fn (_ o)
+                                   (let ((held (List find (fn (_ f) (str=? (first f) name)) (rest o))))
+                                     (if (null? held) (lit null) (rest held))))
+                                 objects)))
+                           names)))
+            (list names (List map first columns)
+                  (%sql-as-rows (List map rest columns)))))))))
 
 ; The endings of a file's name that say it is JSON; any other file is CSV
 (def %sql-json-endings (list ".json" ".ndjson" ".jsonl"))
@@ -294,17 +474,26 @@
 
 ; --- writing -----------------------------------------------------------------
 
-; A value as JSON writes it: a number as it is shown, text as a string
+; A value as JSON writes it: a number and a boolean as they are shown, a
+; list as an array, a struct as an object, and anything else as a string
 (def %sql-json-text
-  (fn (_ v)
-    (match
-      ((sql-null? v) "null")
-      ((List includes? (first v) (list (lit utinyint) (lit usmallint) (lit uinteger) (lit ubigint)
-                                      (lit uhugeint) (lit tinyint) (lit smallint) (lit integer) (lit bigint)
-                                      (lit hugeint) (lit real) (lit double) (lit boolean)))
-        (sql-value-text v))
-      ((pair? (first v)) (sql-value-text v))
-      (#t (Json emit (sql-value-text v))))))
+  (fn (self v)
+    (let ((t (first v)))
+      (match
+        ((sql-null? v) "null")
+        ((and (pair? t) (eq? (first t) (lit list)))
+          (Str8 append "["
+            (Str8 join "," (List map (fn (_ e) (self (pair (List second t) e))) (first (rest v))))
+            "]"))
+        ((and (pair? t) (eq? (first t) (lit struct)))
+          (Str8 append "{"
+            (Str8 join ","
+              (List map
+                (fn (_ f e) (Str8 append (Json emit (first f)) ":" (self (pair (List second f) e))))
+                (rest t) (rest v)))
+            "}"))
+        ((or (sql-numeric-type? t) (eq? t (lit boolean))) (sql-value-text v))
+        (#t (Json emit (sql-value-text v)))))))
 
 ; A result as a file's text.  HEADER says whether a CSV's first line names
 ; its columns.

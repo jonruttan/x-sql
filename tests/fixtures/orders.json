@@ -1,0 +1,4 @@
+[{"id": 1, "tags": ["new", "gift"], "buyer": {"name": "Ann", "age": 30}, "prices": [1, 2.5], "grid": [[1], [2, 3]], "day": "2026-01-31"},
+ {"id": 2, "tags": [], "buyer": {"age": 41, "name": "Bob", "city": "Oslo"}, "prices": [], "grid": [], "day": "2026-02-01"},
+ {"id": 3, "tags": null, "buyer": null, "prices": [3], "grid": null, "day": null},
+ {"id": 4, "buyer": {"name": null}, "lines": [{"sku": "a1", "n": 2}, {"n": 1, "note": "last one"}], "days": ["2026-01-31"]}]
