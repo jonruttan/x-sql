@@ -764,7 +764,12 @@
     (method lt (self a b name) (%sql-compare a b (fn (_ c) (< c 0))))
     (method le (self a b name) (%sql-compare a b (fn (_ c) (<= c 0))))
     (method gt (self a b name) (%sql-compare a b (fn (_ c) (> c 0))))
-    (method ge (self a b name) (%sql-compare a b (fn (_ c) (>= c 0))))))
+    (method ge (self a b name) (%sql-compare a b (fn (_ c) (>= c 0))))
+    ; Lists that share a value, a list that holds another's values, and
+    ; one whose values another holds
+    (method overlap (self a b name) (%sql-has-any "&&" (list a b)))
+    (method holds (self a b name) (%sql-has-all "@>" (list a b)))
+    (method held (self a b name) (%sql-has-all "<@" (list b a)))))
 
 ; --- pieces the expressions share --------------------------------------------
 
@@ -1263,6 +1268,132 @@
             (rest (List fold (fn (_ best v) (if (pick (%sql-order v best)) v best))
                              (first held) (rest held)))))))))
 
+; The type of a list's elements; null for a NULL constant
+(def %sql-element-type
+  (fn (_ v) (if (%sql-null-type? (first v)) (lit null) (List second (first v)))))
+
+; ARGS are as many as COUNTS says, each a list or a NULL constant, or the
+; function has no such form
+(def %sql-all-lists
+  (fn (_ name args counts)
+    (%sql-arity name args counts)
+    (unless (List all? (fn (_ a) (or (%sql-list? (first a)) (%sql-null-type? (first a)))) args)
+      (%sql-no-match name args))))
+
+; Two lists as values of the one type their elements go into: (TYPE AS BS),
+; a NULL list as no value.  ANSWER is what the function's form answers,
+; for the error of two types that do not go together.
+(def %sql-two-lists
+  (fn (_ name args answer)
+    (%sql-all-lists name args (list 2))
+    (let ((t (guard (_ (error (Str8 str "Binder Error: Cannot deduce template type 'T' in function: '"
+                                       name "(T[], T[]) -> " answer "'")))
+               (sql-common-type (List map %sql-element-type args)))))
+      (pair t
+        (List map
+          (fn (_ a)
+            (if (%sql-null? a) ()
+              (List map (fn (_ e) (pair t (sql-cast e t))) (%sql-elements a))))
+          args)))))
+
+; X, which is not NULL, is among ES
+(def %sql-held?
+  (fn (_ x es)
+    (List any? (fn (_ e) (and (not (%sql-null? e)) (= (%sql-order e x) 0))) es)))
+
+; Whether two lists share a value, and whether the first holds every
+; value of the second.  A NULL among the elements is no value.
+(def %sql-has-any
+  (fn (_ name args)
+    (let ((both (%sql-two-lists name args "BOOLEAN")))
+      (pair (lit boolean)
+        (if (%sql-any-null? args) ()
+          (List any? (fn (_ x) (and (not (%sql-null? x)) (%sql-held? x (List second both))))
+                     (List third both)))))))
+
+(def %sql-has-all
+  (fn (_ name args)
+    (let ((both (%sql-two-lists name args "BOOLEAN")))
+      (pair (lit boolean)
+        (if (%sql-any-null? args) ()
+          (List all? (fn (_ x) (or (%sql-null? x) (%sql-held? x (List second both))))
+                     (List third both)))))))
+
+; The values of ES that are not NULL
+(def %sql-known (fn (_ es) (List reject %sql-null? es)))
+
+; A list's elements as text with SEP between, the NULLs left out; NULL
+; when none is left
+(def %sql-list-text
+  (fn (_ name args sep)
+    (%sql-of-list name args (list 1) (lit varchar)
+      (fn (_ es)
+        (let ((held (%sql-known es)))
+          (if (null? held) () (Str8 join sep (List map sql-value-text held))))))))
+
+; The elements of a list of truths joined as AND joins them when EVERY,
+; else as OR does, the NULLs left out
+(def %sql-list-truth
+  (fn (_ name args every)
+    (%sql-arity name args (list 1))
+    (%sql-list-first name args)
+    (unless (List includes? (%sql-element-type (first args)) (list (lit boolean) (lit null)))
+      (error "Binder Error: No matching aggregate function"))
+    (%sql-of-list name args (list 1) (lit boolean)
+      (fn (_ es)
+        (let ((held (List map rest (%sql-known es))))
+          (match
+            ((null? held) ())
+            (every (if (List all? (fn (_ x) x) held) #t #f))
+            (#t (if (List any? (fn (_ x) x) held) #t #f))))))))
+
+; A list N times over
+(def %sql-list-repeated
+  (fn (_ args)
+    (let ((l (first args)) (n (List second args)))
+      (unless (or (%sql-int? (first n)) (%sql-null-type? (first n))) (%sql-no-match "repeat" args))
+      (if (%sql-null-type? (first n)) (pair (lit null) ())
+        (pair (first l)
+          (if (or (%sql-null? l) (%sql-null? n)) ()
+            (list (List flat-map (fn (_ own) own)
+                                 (List repeat (%sql-max 0 (rest n)) (first (rest l)))))))))))
+
+; The elements of OWN that MASK is true beside, a NULL where MASK goes
+; past them
+(def %sql-masked
+  (fn (self mask own)
+    (let ((after (if (null? own) () (rest own))))
+      (match
+        ((null? mask) ())
+        ((first mask) (pair (if (null? own) () (first own)) (self (rest mask) after)))
+        (#t (self (rest mask) after))))))
+
+; A list's second argument is a list of ELEMENT values, none of them
+; NULL, or the function has no such form
+(def %sql-second-list
+  (fn (_ name args element?)
+    (%sql-all-lists name args (list 2))
+    (let ((t (%sql-element-type (List second args))))
+      (unless (or (element? t) (%sql-null-type? t)) (%sql-no-match name args)))
+    (when (and (not (%sql-null? (List second args)))
+               (List any? %sql-null? (%sql-elements (List second args))))
+      (error "Invalid Input Error: NULLs are not allowed as list elements in the second input parameter."))))
+
+; A function of a list and a list that picks from it: NULL for a NULL
+; constant on either side, else F of the x values of each
+(def %sql-picked
+  (fn (_ args f)
+    (let ((l (first args)) (by (List second args)))
+      (if (or (%sql-null-type? (first l)) (%sql-null-type? (first by))) (pair (lit null) ())
+        (pair (first l)
+          (if (or (%sql-null? l) (%sql-null? by)) ()
+            (list (f (first (rest l)) (first (rest by))))))))))
+
+; The aggregates list_aggregate knows by name
+(def %sql-list-aggregates
+  (list "sum" "min" "max" "avg" "count" "first" "last" "any_value" "product"
+        "string_agg" "bool_and" "bool_or"))
+
 (def-class SqlFunction ()
   (static
     ; Its arguments as a list, in the type they all go into.  A string
@@ -1432,6 +1563,142 @@
         (fn (_ es)
           (let ((held (List reject %sql-null? es)))
             (if (null? held) () (rest (first held)))))))
+    ; A list's values once each, the NULLs left out.  DuckDB promises no
+    ; order of them; here each stands where it first did.
+    (method list_distinct (self args node)
+      (%sql-of-list "list_distinct" args (list 1) (lit list)
+        (fn (_ es) (list (List map rest (%sql-once (%sql-known es) ()))))))
+    (method array_distinct (self args node) (SqlFunction list_distinct args node))
+    ; How many different values a list holds, the NULLs left out
+    (method list_unique (self args node)
+      (%sql-arity "list_unique" args (list 1))
+      (%sql-list-first "list_unique" args)
+      (pair (lit ubigint)
+        (if (%sql-null? (first args)) ()
+          (List length (%sql-once (%sql-known (%sql-elements (first args))) ())))))
+    (method array_unique (self args node) (SqlFunction list_unique args node))
+    ; Whether two lists share a value, and whether the first holds every
+    ; value of the second; a NULL among the elements is no value
+    (method list_has_any (self args node) (%sql-has-any "list_has_any" args))
+    (method array_has_any (self args node) (%sql-has-any "array_has_any" args))
+    (method list_has_all (self args node) (%sql-has-all "list_has_all" args))
+    (method array_has_all (self args node) (%sql-has-all "array_has_all" args))
+    ; The values of the first list that the second holds, once each.  A
+    ; NULL first list is NULL, and a NULL second holds nothing.
+    (method list_intersect (self args node)
+      (let ((both (%sql-two-lists "list_intersect" args "T[]")))
+        (pair (list (lit list) (first both))
+          (if (%sql-null? (first args)) ()
+            (list (List map rest
+                    (%sql-once (List filter (fn (_ x) (%sql-held? x (List third both)))
+                                            (%sql-known (List second both)))
+                               ())))))))
+    (method array_intersect (self args node) (SqlFunction list_intersect args node))
+    ; A list made N long: cut, or filled out with NULLs or with a value
+    (method list_resize (self args node)
+      (%sql-arity "list_resize" args (list 2 3))
+      (%sql-list-first "list_resize" args)
+      (let ((l (first args)) (t (%sql-element-type (first args))))
+        (let ((n (if (%sql-null? (List second args)) 0 (sql-cast (List second args) (lit ubigint))))
+              (fill (if (or (null? (List drop 2 args)) (%sql-null-type? t)) ()
+                      (sql-cast (List third args) t))))
+          (if (%sql-null-type? (first l)) (pair (lit null) ())
+            (pair (first l)
+              (if (%sql-null? l) ()
+                (let ((own (first (rest l))))
+                  (list (if (<= n (List length own)) (List take n own)
+                          (List append own (List repeat (- n (List length own)) fill)))))))))))
+    (method array_resize (self args node) (SqlFunction list_resize args node))
+    ; The elements a list of truths is true beside
+    (method list_where (self args node)
+      (%sql-second-list "list_where" args (fn (_ t) (eq? t (lit boolean))))
+      (%sql-picked args (fn (_ own mask) (%sql-masked mask own))))
+    (method array_where (self args node) (SqlFunction list_where args node))
+    ; The elements at the places a list of places names, counted from 1;
+    ; a NULL for a place the list has not
+    (method list_select (self args node)
+      (%sql-second-list "list_select" args %sql-int?)
+      (%sql-picked args
+        (fn (_ own places)
+          (List map
+            (fn (_ i) (if (and (>= i 1) (<= i (List length own))) (List ref (- i 1) own) ()))
+            places))))
+    (method array_select (self args node) (SqlFunction list_select args node))
+    ; The places of a list's elements in the order list_sort would put
+    ; them in, counted from 1
+    (method list_grade_up (self args node)
+      (%sql-arity "list_grade_up" args (list 1 2 3))
+      (%sql-list-first "list_grade_up" args)
+      (let ((down (%sql-sort-word (if (null? (rest args)) () (List second args))
+                                  %sql-sort-ways #f "OrderType"))
+            (nulls-first (%sql-sort-word (if (null? (List drop 2 args)) () (List third args))
+                                         %sql-sort-nulls #f "OrderByNullType")))
+        (pair (list (lit list) (lit bigint))
+          (if (%sql-null? (first args)) ()
+            (let ((placed (List map (fn (_ e i) (pair e i)) (%sql-elements (first args))
+                                    (List range 1 (+ (List length (first (rest (first args)))) 1)))))
+              (let ((nulls (List filter (fn (_ p) (%sql-null? (first p))) placed))
+                    (sorted (List sort
+                              (fn (_ a b)
+                                (if down (> (%sql-order (first a) (first b)) 0)
+                                  (< (%sql-order (first a) (first b)) 0)))
+                              (List reject (fn (_ p) (%sql-null? (first p))) placed))))
+                (list (List map rest
+                        (if nulls-first (List append nulls sorted) (List append sorted nulls))))))))))
+    (method array_grade_up (self args node) (SqlFunction list_grade_up args node))
+    (method array_pop_front (self args node)
+      (%sql-of-list "array_pop_front" args (list 1) (lit list)
+        (fn (_ es) (list (if (null? es) () (List map rest (rest es)))))))
+    (method array_pop_back (self args node)
+      (%sql-of-list "array_pop_back" args (list 1) (lit list)
+        (fn (_ es)
+          (list (if (null? es) () (List map rest (List reverse (rest (List reverse es)))))))))
+    ; A list's elements multiplied, the NULLs left out
+    (method list_product (self args node)
+      (%sql-arity "list_product" args (list 1))
+      (%sql-list-first "list_product" args)
+      (let ((t (%sql-element-type (first args))))
+        (unless (or (%sql-numeric? t) (%sql-null-type? t))
+          (error "Binder Error: No matching aggregate function")))
+      (%sql-of-list "list_product" args (list 1) (lit double)
+        (fn (_ es)
+          (let ((held (%sql-known es)))
+            (if (null? held) ()
+              (List fold (fn (_ acc v) (* acc (%sql-as-double v))) (Float from 1) held))))))
+    (method list_string_agg (self args node) (%sql-list-text "list_string_agg" args ","))
+    (method list_bool_and (self args node) (%sql-list-truth "list_bool_and" args #t))
+    (method list_bool_or (self args node) (%sql-list-truth "list_bool_or" args #f))
+    ; An aggregate, named by a text, of a list's elements
+    (method list_aggregate (self args node)
+      (when (or (null? args) (null? (rest args))) (%sql-no-match "list_aggregate" args))
+      (%sql-list-first "list_aggregate" args)
+      (let ((name (if (%sql-null? (List second args)) "NULL" (rest (List second args)))))
+        (let ((low (sql-lower name)) (more (List drop 2 args)))
+          (match
+            ((%sql-null-type? (first (first args))) (pair (lit null) ()))
+            ((List includes? low (list "list" "array_agg")) (first args))
+            ((not (List includes? low %sql-list-aggregates))
+              (error (Str8 str "Catalog Error: Aggregate Function with name " name
+                               " does not exist!")))
+            ((and (str=? low "string_agg") (not (null? more)))
+              (%sql-list-text "list_aggregate" (list (first args)) (sql-value-text (first more))))
+            (#t ((class-static-ref SqlFunction (Str8 ->sym (Str8 append "list_" low)))
+                 SqlFunction (list (first args)) node))))))
+    (method list_aggr (self args node) (SqlFunction list_aggregate args node))
+    (method array_aggregate (self args node) (SqlFunction list_aggregate args node))
+    (method array_aggr (self args node) (SqlFunction list_aggregate args node))
+    ; The functions that take a lambda have no form without one
+    (method list_transform (self args node) (%sql-no-match (sql-lower (List second node)) args))
+    (method list_apply (self args node) (SqlFunction list_transform args node))
+    (method array_transform (self args node) (SqlFunction list_transform args node))
+    (method array_apply (self args node) (SqlFunction list_transform args node))
+    (method apply (self args node) (SqlFunction list_transform args node))
+    (method list_filter (self args node) (SqlFunction list_transform args node))
+    (method array_filter (self args node) (SqlFunction list_transform args node))
+    (method filter (self args node) (SqlFunction list_transform args node))
+    (method list_reduce (self args node) (SqlFunction list_transform args node))
+    (method array_reduce (self args node) (SqlFunction list_transform args node))
+    (method reduce (self args node) (SqlFunction list_transform args node))
     (method lower (self args node)
       (%sql-text-function "lower" args (list 1) (fn (_ t) (Str8 downcase (first t)))))
     (method upper (self args node)
@@ -1502,10 +1769,11 @@
                   (Str sub (- size take) take text))))))))
     (method repeat (self args node)
       (%sql-arity "repeat" args (list 2))
-      (%sql-texts "repeat" (list (first args)))
-      (let ((n (%sql-count-arg "repeat" args (List second args))))
-        (pair (lit varchar)
-          (if (%sql-any-null? args) () (Str8 repeat n (rest (first args)))))))
+      (if (%sql-list? (first (first args))) (%sql-list-repeated args)
+        (do (%sql-texts "repeat" (list (first args)))
+            (let ((n (%sql-count-arg "repeat" args (List second args))))
+              (pair (lit varchar)
+                (if (%sql-any-null? args) () (Str8 repeat n (rest (first args)))))))))
     (method abs (self args node)
       (%sql-numeric-function "abs" args
         (fn (_ v)
@@ -1994,8 +2262,197 @@
       (pair (first other) (rest v))
       v)))
 
+; --- lambdas -----------------------------------------------------------------
+;
+; A lambda node is (lambda NAMES BODY).  It is a value nowhere: a function
+; that takes one reads the node, and answers its body for each element of
+; a list, the parameters being the columns of a row of their own and the
+; row the lambda was written for the row outside it.
+
+(def %sql-lambda? (fn (_ node) (and (pair? node) (eq? (first node) (lit lambda)))))
+
+; NODE holds a select statement, at any depth
+(def %sql-queried?
+  (fn (self node)
+    (match
+      ((not (pair? node)) #f)
+      ((List includes? (first node) (list (lit subquery) (lit exists) (lit in-query))) #t)
+      (#t (or (self (first node)) (self (rest node)))))))
+
+; The scope a lambda's body is answered in: its parameters NAMES, of
+; TYPES, the columns of a row holding the x values XS, and SCOPE outside.
+; Where no row is outside, a name that is no parameter meets a scope of no
+; table, and is refused as one with no FROM is.
+(def %sql-lambda-scope
+  (fn (_ names types xs scope)
+    (list (List map (fn (_ n t) (sql-column "" n t)) names types)
+          xs ()
+          (if (null? scope) (sql-scope () () () ()) scope)
+          (if (null? scope) () (%sql-scope-windows scope)))))
+
+; The value of a lambda's body with its parameters, of TYPES, holding XS
+(def %sql-lambda-value
+  (fn (_ lnode types xs scope)
+    (sql-eval (List third lnode)
+              (%sql-lambda-scope (List second lnode) types xs scope))))
+
+; The types of the parameters of a lambda over elements of type T: the
+; element, and its place when a second parameter is named
+(def %sql-lambda-types
+  (fn (_ lnode t)
+    (when (> (List length (List second lnode)) 2)
+      (error "Binder Error: This lambda function only supports up to two lambda parameters!"))
+    (if (null? (rest (List second lnode))) (list t) (list t (lit bigint)))))
+
+; The body's value for each of ES, values of a list's elements
+(def %sql-lambda-each
+  (fn (_ lnode types es scope)
+    (List map
+      (fn (_ e i)
+        (%sql-lambda-value lnode types
+          (if (null? (rest types)) (list (rest e)) (list (rest e) i))
+          scope))
+      es (List range 1 (+ (List length es) 1)))))
+
+; The body's type, read over parameters that are NULL
+(def %sql-lambda-type
+  (fn (_ lnode types scope)
+    (first (%sql-lambda-value lnode types (List repeat (List length types) ()) scope))))
+
+(def %sql-lambda-no-match
+  (fn (_ node scope)
+    (error (Str8 str "Binder Error: No function matches the given name and argument types '"
+                     (sql-lower (List second node)) "("
+                     (Str8 join ", "
+                       (List map
+                         (fn (_ a)
+                           (if (%sql-lambda? a) "LAMBDA" (%sql-type-name (first (sql-eval a scope)))))
+                         (List third node)))
+                     ")'."))))
+
+; What a call that takes a lambda is given, when it has one of COUNTS
+; arguments and the second is the lambda: (LIST LAMBDA ELEMENT-TYPE)
+(def %sql-lambda-read
+  (fn (_ node scope counts)
+    (let ((args (List third node)))
+      (unless (and (List includes? (List length args) counts)
+                   (%sql-lambda? (List second args))
+                   (not (List any? %sql-lambda? (pair (first args) (List drop 2 args)))))
+        (%sql-lambda-no-match node scope))
+      (let ((lnode (List second args)))
+        (when (sql-aggregated? (List third lnode))
+          (error "Binder Error: aggregate functions cannot reference lambda parameters"))
+        (when (%sql-queried? (List third lnode))
+          (error "Binder Error: subqueries in lambda expressions are not supported"))
+        (let ((l (sql-eval (first args) scope)))
+          (unless (or (%sql-list? (first l)) (%sql-null-type? (first l)))
+            (error "Binder Error: Invalid LIST argument during lambda function binding!"))
+          (list l lnode (%sql-element-type l)))))))
+
+; A list of the body's value for each element
+(def %sql-transform
+  (fn (_ node scope)
+    (let ((read (%sql-lambda-read node scope (list 2))))
+      (let ((l (first read)) (lnode (List second read)))
+        (let ((types (%sql-lambda-types lnode (List third read))))
+          (let ((t (%sql-lambda-type lnode types scope)))
+            (match
+              ((%sql-null-type? (first l)) (pair (lit null) ()))
+              ((%sql-null? l) (pair (list (lit list) t) ()))
+              (#t (pair (list (lit list) t)
+                    (list (List map (fn (_ v) (sql-cast v t))
+                                    (%sql-lambda-each lnode types (%sql-elements l) scope))))))))))))
+
+; The elements the body is true of
+(def %sql-filter
+  (fn (_ node scope)
+    (let ((read (%sql-lambda-read node scope (list 2))))
+      (let ((l (first read)) (lnode (List second read)))
+        (let ((types (%sql-lambda-types lnode (List third read))))
+          (%sql-lambda-type lnode types scope)
+          (if (or (%sql-null-type? (first l)) (%sql-null? l)) l
+            (let ((es (%sql-elements l)))
+              (pair (first l)
+                (list (List map (fn (_ kept) (rest (first kept)))
+                        (List filter (fn (_ p) (eq? (sql-cast (rest p) (lit boolean)) #t))
+                          (List map (fn (_ e v) (pair e v)) es
+                                    (%sql-lambda-each lnode types es scope)))))))))))))
+
+; The type list_reduce answers in: the body's, read with the value so far
+; as START's type when a start is given, and else as an element, when it
+; must also be a type an element goes into
+(def %sql-reduce-type
+  (fn (_ lnode et start scope)
+    (let ((placed (not (null? (List drop 2 (List second lnode))))))
+      (let ((r (%sql-lambda-type lnode
+                 (pair (if (null? start) et (first start))
+                       (if placed (list et (lit bigint)) (list et)))
+                 scope)))
+        (let ((joined (if (null? start) (guard (_ ()) (sql-common-type (list et r))) r)))
+          (when (null? joined)
+            (error (Str8 str "Binder Error: No common super type between list element type "
+                             (%sql-type-name et) " and lambda return type "
+                             (%sql-type-name r))))
+          joined)))))
+
+; ES folded from FIRST, both values, by the body, which is given the
+; value so far, an element, and the element's place when it names a third
+(def %sql-reduced
+  (fn (_ lnode t et first-value es from scope)
+    (let ((placed (not (null? (List drop 2 (List second lnode))))))
+      (List fold
+        (fn (_ acc entry)
+          (sql-cast
+            (%sql-lambda-value lnode
+              (pair t (if placed (list et (lit bigint)) (list et)))
+              (pair acc (if placed (list (rest (first entry)) (rest entry))
+                          (list (rest (first entry)))))
+              scope)
+            t))
+        (sql-cast first-value t)
+        (List map (fn (_ e i) (pair e i)) es
+                  (List range from (+ from (List length es))))))))
+
+; A list's elements folded into one value, from the first of them or from
+; a start
+(def %sql-reduce
+  (fn (_ node scope)
+    (let ((read (%sql-lambda-read node scope (list 2 3)))
+          (given (List drop 2 (List third node))))
+      (let ((l (first read)) (lnode (List second read)) (et (List third read))
+            (start (if (null? given) () (sql-eval (first given) scope))))
+        (unless (List includes? (List length (List second lnode)) (list 2 3))
+          (error "Binder Error: list_reduce expects a function with 2 or 3 arguments"))
+        (let ((t (%sql-reduce-type lnode et start scope)))
+          (match
+            ((%sql-null-type? (first l)) (pair (lit null) ()))
+            ((%sql-null? l) (pair t ()))
+            ((not (null? start))
+              (pair t (%sql-reduced lnode t et start (%sql-elements l) 1 scope)))
+            ((null? (%sql-elements l))
+              (error "Parameter Not Allowed Error: Cannot perform list_reduce on an empty input list"))
+            (#t (pair t (%sql-reduced lnode t et (first (%sql-elements l))
+                                      (rest (%sql-elements l)) 2 scope)))))))))
+
+(def-class SqlLambda ()
+  (static
+    (method list_transform (self node scope) (%sql-transform node scope))
+    (method list_apply (self node scope) (%sql-transform node scope))
+    (method array_transform (self node scope) (%sql-transform node scope))
+    (method array_apply (self node scope) (%sql-transform node scope))
+    (method apply (self node scope) (%sql-transform node scope))
+    (method list_filter (self node scope) (%sql-filter node scope))
+    (method array_filter (self node scope) (%sql-filter node scope))
+    (method filter (self node scope) (%sql-filter node scope))
+    (method list_reduce (self node scope) (%sql-reduce node scope))
+    (method array_reduce (self node scope) (%sql-reduce node scope))
+    (method reduce (self node scope) (%sql-reduce node scope))))
+
 (def-class SqlNode ()
   (static
+    ; A lambda is read by the function it is given to, and is nothing
+    ; anywhere else
+    (method lambda (self node scope) (error "Binder Error: invalid lambda expression"))
     (method int (self node scope)
       (pair (%sql-int-type (List second node)) (List second node)))
     (method dec (self node scope)
@@ -2048,6 +2505,11 @@
       (let ((aggregate (class-static-ref SqlAggregate
                          (Str8 ->sym (sql-lower (List second node))))))
         (match
+          ((List any? %sql-lambda? (List third node))
+            (let ((taker (class-static-ref SqlLambda
+                           (Str8 ->sym (sql-lower (List second node))))))
+              (if (null? taker) (error "Binder Error: This scalar function does not support lambdas!")
+                (taker SqlLambda node scope))))
           ((null? aggregate)
             (let ((function (class-static-ref SqlFunction
                               (Str8 ->sym (sql-lower (List second node))))))
@@ -2168,7 +2630,7 @@
         (pair "year" "\"year\"") (pair "month" "\"month\"") (pair "day" "\"day\"")
         (pair "hour" "\"hour\"") (pair "minute" "\"minute\"")
         (pair "second" "\"second\"") (pair "quarter" "\"quarter\"")
-        (pair "range" "\"range\"")))
+        (pair "range" "\"range\"") (pair "filter" "\"filter\"")))
 
 (def %sql-call-name
   (fn (_ name)
@@ -2342,6 +2804,9 @@
                      " OVER (" (Str8 join " " (%sql-window-texts node)) ")")))
     (method unnest (self node)
       (Str8 append "unnest(" (Str8 join ", " (List map sql-expr-name (List second node))) ")"))
+    (method lambda (self node)
+      (Str8 append "(lambda " (Str8 join ", " (List second node)) ": "
+                   (sql-expr-name (List third node)) ")"))
     (method int (self node) (Str8 str (List second node)))
     (method dec (self node) (List ref 4 node))
     (method dbl (self node) (List second node))

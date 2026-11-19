@@ -101,6 +101,9 @@
 ;                               (slice OPEN-LOW OPEN-HIGH) value[low:high],
 ;                               (field) (value).name, (struct) a struct in
 ;                               braces or struct_pack(name := value)
+;   (lambda NAMES BODY)     lambda x: body, read only by the function it
+;                               is an argument of.  A list comprehension
+;                               is the calls DuckDB reads it as.
 ;   (neg E)  (not E)  (is-null E NEGATED)
 ;   (and A B)  (or A B)
 ;   (bin OP A B)            OP a name from sql/words' sql-binary-ops
@@ -117,9 +120,13 @@
 (def %sql-near
   (fn (_ ts)
     (error
-      (if (null? ts) "Parser Error: syntax error at end of input"
-        (Str8 str "Parser Error: syntax error at or near \""
-                  (List second (first ts)) "\"")))))
+      (match
+        ((null? ts) "Parser Error: syntax error at end of input")
+        ((and (eq? (first (first ts)) (lit op)) (str=? (List second (first ts)) "->"))
+          "Binder Error: Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, i.e.., lambda x, i: x + i, before DuckDB's next release.")
+        (#t
+          (Str8 str "Parser Error: syntax error at or near \""
+                    (List second (first ts)) "\""))))))
 
 ; The first token of TS has TAG and TEXT
 (def %sql-at?
@@ -429,6 +436,9 @@
               (%sql-name? (rest after)) (%sql-kw? (List drop 3 ts) "FROM"))
           (%sql-extract (rest after)))
         ((and (%sql-word? ts "CAST") (%sql-op? after "(")) (%sql-cast (rest after)))
+        ((and (%sql-word? ts "LAMBDA") (%sql-name? after)
+              (or (%sql-op? (rest after) ":") (%sql-op? (rest after) ",")))
+          (%sql-lambda after))
         ((and (%sql-word? ts "EXISTS") (%sql-op? after "(") (%sql-query? (rest after)))
           (%sql-subquery (lit exists) (rest after)))
         ((and (not (%sql-op? after "(")) (List includes? (sql-lower text) %sql-bare-calls))
@@ -448,15 +458,82 @@
         ((%sql-kw? ts "FALSE") (pair (list (lit bool) #f) (rest ts)))
         (#t ())))))
 
+; A lambda's BODY with a parameter's field, written parameter.field, read
+; as the field of the parameter and not as a table's column
+(def %sql-param-fields
+  (fn (self names e)
+    (match
+      ((not (pair? e)) e)
+      ((and (eq? (first e) (lit col)) (not (null? (List third e)))
+            (List any? (fn (_ n) (sql-same-name? n (List third e))) names))
+        (list (lit call) "struct_extract"
+              (list (%sql-col (List third e) ()) (list (lit str) (List second e)))
+              #f (list (lit dotted))))
+      (#t (pair (self names (first e)) (self names (rest e)))))))
+
+(def %sql-lambda-node
+  (fn (_ names body) (list (lit lambda) names (%sql-param-fields names body))))
+
+; Names with commas between, as (NAMES . tokens-left)
+(def %sql-names
+  (fn (_ ts) (%sql-list (fn (_ at) (pair (%sql-name at) (rest at))) ts)))
+
+; lambda x: body, or lambda x, i: body, TS after the word
+(def %sql-lambda
+  (fn (_ ts)
+    (let ((names (%sql-names ts)))
+      (if (%sql-op? (rest names) ":")
+        (let ((body (%sql-expr (rest (rest names)))))
+          (pair (%sql-lambda-node (first names) (first body)) (rest body)))
+        (%sql-near (rest names))))))
+
+; [E for NAMES in SOURCE if TEST] as DuckDB reads it: list_apply of the
+; lambda over the source, and with a test, of the result of each element
+; the test is true of, the two held together in a struct until then
+(def %sql-comprehended
+  (fn (_ e names source test)
+    (let ((applied (fn (_ l by) (list (lit call) "list_apply" (list l by) #f)))
+          (field (fn (_ name)
+                   (list (lit lambda) (list "elem")
+                     (list (lit call) "struct_extract"
+                           (list (%sql-col "elem" ()) (list (lit str) name)) #f)))))
+      (if (null? test) (applied source (%sql-lambda-node names e))
+        (applied
+          (list (lit call) "list_filter"
+                (list (applied source
+                        (%sql-lambda-node names
+                          (list (lit call) "struct_pack"
+                                (list (list (lit str) "filter") test (list (lit str) "result") e)
+                                #f (list (lit struct)))))
+                      (field "filter"))
+                #f)
+          (field "result"))))))
+
+; A list comprehension, E read and TS after its FOR
+(def %sql-comprehension
+  (fn (_ e ts)
+    (let ((names (%sql-names ts)))
+      (unless (%sql-kw? (rest names) "IN") (%sql-near (rest names)))
+      (let ((source (%sql-concat (rest (rest names)))))
+        (let ((test (if (%sql-word? (rest source) "IF") (%sql-expr (rest (rest source))) ())))
+          (let ((after (if (null? test) (rest source) (rest test))))
+            (unless (%sql-op? after "]") (%sql-near after))
+            (pair (%sql-comprehended e (first names) (first source)
+                                     (if (null? test) () (first test)))
+                  (rest after))))))))
+
 ; A list written in brackets, TS after the opening one: the call
-; list_value of its elements
+; list_value of its elements, or a comprehension
 (def %sql-list-literal
   (fn (_ ts)
     (if (%sql-op? ts "]") (pair (list (lit call) "list_value" () #f) (rest ts))
       (let ((items (%sql-list %sql-expr ts)))
-        (if (%sql-op? (rest items) "]")
-          (pair (list (lit call) "list_value" (first items) #f) (rest (rest items)))
-          (%sql-near (rest items)))))))
+        (match
+          ((%sql-op? (rest items) "]")
+            (pair (list (lit call) "list_value" (first items) #f) (rest (rest items))))
+          ((and (%sql-word? (rest items) "FOR") (null? (rest (first items))))
+            (%sql-comprehension (first (first items)) (rest (rest items))))
+          (#t (%sql-near (rest items))))))))
 
 ; One field of a struct in braces, 'name': value, as (NAME-NODE EXPR)
 (def %sql-struct-entry
@@ -792,7 +869,7 @@
 
 (def %sql-mul (fn (_ ts) (%sql-binary %sql-unary (list "*" "/" "//" "%") ts)))
 (def %sql-add (fn (_ ts) (%sql-binary %sql-mul (list "+" "-") ts)))
-(def %sql-concat (fn (_ ts) (%sql-binary %sql-add (list "||") ts)))
+(def %sql-concat (fn (_ ts) (%sql-binary %sql-add (list "||" "&&" "@>" "<@") ts)))
 
 (def %sql-compare-ops (list "=" "==" "<>" "!=" "<" "<=" ">" ">="))
 

@@ -56,13 +56,26 @@ What is built:
   list_sort list_reverse_sort list_reverse flatten list_slice
   list_extract list_sum list_min list_max list_avg list_count list_first
   list_last list_any_value array_to_string range generate_series
-  string_split struct_pack struct_extract`, and the `array_` names of
-  the `list_` ones. `unnest(list)` in the list of a `SELECT` is a row for each element, two
+  string_split list_distinct list_unique list_has_any list_has_all
+  list_intersect list_resize list_where list_select list_grade_up
+  array_pop_front array_pop_back list_product list_string_agg
+  list_bool_and list_bool_or list_aggregate repeat struct_pack
+  struct_extract`, and the `array_` names of the `list_` ones. `&&` is
+  `list_has_any`, `@>` `list_has_all` and `<@` the same the other way
+  round. `list_distinct` and `list_intersect` leave each value where it
+  first stood, where DuckDB's order is its hash table's. A lambda is
+  `lambda x: x + 1`, or `lambda x, i: ...` with the element's place:
+  `list_transform(list, lambda)`, `list_filter(list, lambda)` and
+  `list_reduce(list, lambda [, start])` take one, and it reads the row
+  it is written in. `[x * 2 for x in list if x > 1]` is a list
+  comprehension. `unnest(list)` in the list of a `SELECT` is a row for each element, two
   of them side by side; of a struct, a column for each field. In a
   `FROM` it is a table, read for each row of the table before it: `FROM
   t, unnest(t.tags) AS u(tag)`. Not yet: `unnest(x, recursive := true)`,
-  `list_distinct`, lambdas, maps, and text read as a list
-  (`'[1, 2]'::INT[]`).
+  `list_zip` and the unnamed structs it answers, the statistics
+  (`list_median`, `list_stddev_samp` and the like), `list_histogram`,
+  the bit aggregates, the distances between lists of numbers, maps,
+  and text read as a list (`'[1, 2]'::INT[]`).
 - **Operators.** `+ - *` on any numbers: integers in the wider type with
   an overflow an error, decimals exactly with DuckDB's widths and scales,
   a double when either is one, a REAL when either is one and neither a
@@ -167,8 +180,8 @@ answered differently.
 
 In this order:
 
-1. DuckDB's friendlier forms: the rest of the list functions; a CSV's
-   separator and its other options; Parquet.
+1. DuckDB's friendlier forms: a CSV's separator and its other options;
+   Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
 3. The servers the rest of the way: a certificate authority of one's own for
