@@ -49,7 +49,7 @@
         "CAST" "REPLACE" "IF" "EXISTS" "UPDATE" "SET" "DELETE" "COPY" "TO"
         "FORMAT" "HEADER" "INTERVAL" "EXTRACT" "OVER" "PARTITION" "ROWS"
         "UNBOUNDED" "PRECEDING" "FOLLOWING" "CURRENT" "ROW" "RANGE" "GROUPS"
-        "EXCLUDE" "TIES" "RECURSIVE"))
+        "EXCLUDE" "TIES" "RECURSIVE" "RENAME"))
 
 ; The functions that answer for a row among its window's rows, and are
 ; nothing without an OVER

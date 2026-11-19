@@ -203,32 +203,111 @@
       (%sql-source (first (first from)) (List second (first from)))
       (rest from))))
 
-; The items a star stands for: every column, or every column of QUALIFIER
-(def %sql-star
-  (fn (_ qualifier columns)
-    (let ((chosen (if (null? qualifier) (List reject sql-column-hidden? columns)
-                    (List filter (fn (_ c) (sql-same-name? (first c) qualifier))
-                                 columns))))
+; COLUMN is the one ENTRY of a star's list names: (QUALIFIER NAME ...),
+; QUALIFIER nil for a column of any table
+(def %sql-star-named?
+  (fn (_ column entry)
+    (and (sql-same-name? (List second column) (List second entry))
+         (or (null? (first entry))
+             (and (not (null? (first column)))
+                  (sql-same-name? (first column) (first entry)))))))
+
+; Every entry of a star's list WORD names a column the star has
+(def %sql-star-check
+  (fn (_ word entries own qualifier)
+    (let ((lost (List find
+                  (fn (_ e) (not (List any? (fn (_ c) (%sql-star-named? c e)) own)))
+                  entries)))
+      (unless (null? lost)
+        (error (Str8 str "Binder Error: Column "
+                         (if (null? (first lost)) "" (Str8 str "\"" (first lost) "\"."))
+                         "\"" (List second lost) "\" in " word " list not found in "
+                         (if (null? qualifier) "FROM clause" qualifier)))))))
+
+; A star's columns that are shown.  A column a USING hid stays out while
+; the column standing for it is shown, and takes its place when that one
+; is excluded by its table's name.
+(def %sql-star-shown
+  (fn (_ kept)
+    (List reject
+      (fn (_ c)
+        (and (sql-column-hidden? c)
+             (List any? (fn (_ k) (and (not (sql-column-hidden? k))
+                                       (sql-same-name? (List second k) (List second c))))
+                        kept)))
+      kept)))
+
+; COLUMNS less each one that a REPLACE names and that follows another of
+; its name: a REPLACE is used once, and DuckDB drops the columns it would
+; have gone on to
+(def %sql-star-once
+  (fn (self columns replaces seen)
+    (if (null? columns) ()
+      (let ((name (List second (first columns))))
+        (match
+          ((not (List any? (fn (_ r) (sql-same-name? (List second r) name)) replaces))
+            (pair (first columns) (self (rest columns) replaces seen)))
+          ((List any? (fn (_ s) (sql-same-name? s name)) seen)
+            (self (rest columns) replaces seen))
+          (#t (pair (first columns)
+                    (self (rest columns) replaces (pair name seen)))))))))
+
+; The item a star gives for COLUMN: its REPLACE expression under the name
+; written there, the column under its RENAME name, or the column.  Of two
+; renames of one column the later holds.
+(def %sql-star-column
+  (fn (_ column replaces renames)
+    (let ((replace (List find (fn (_ r) (sql-same-name? (List second r) (List second column)))
+                              replaces))
+          (rename (List find (fn (_ r) (%sql-star-named? column r)) (List reverse renames)))
+          (node (sql-column-node (List second column) (first column))))
       (match
-        ((null? columns)
-          (error "Binder Error: * expression without FROM clause!"))
-        ((null? chosen)
-          (error (Str8 str "Binder Error: Referenced table \"" qualifier
-                           "\" not found!")))
-        (#t
-          (List map
-            (fn (_ c) (list (sql-column-node (List second c) (first c)) ()))
-            chosen))))))
+        ((not (null? replace)) (list (first replace) (List second replace)))
+        ((not (null? rename)) (list node (List third rename)))
+        (#t (list node ()))))))
+
+; The items a star stands for: every column, or every column of its
+; qualifier, less those its EXCLUDE names
+(def %sql-star
+  (fn (_ node columns)
+    (let ((qualifier (List second node))
+          (lists (if (null? (rest (rest node))) (list () () ()) (List third node))))
+      (let ((own (if (null? qualifier) columns
+                   (List filter (fn (_ c) (sql-same-name? (first c) qualifier))
+                                columns)))
+            (excludes (first lists))
+            (replaces (List second lists)))
+        (match
+          ((null? columns)
+            (error "Binder Error: * expression without FROM clause!"))
+          ((null? own)
+            (error (Str8 str "Binder Error: Referenced table \"" qualifier
+                             "\" not found!")))
+          (#t
+            (do
+              (%sql-star-check "EXCLUDE" excludes own qualifier)
+              (%sql-star-check "REPLACE"
+                (List map (fn (_ r) (list () (List second r))) replaces) own qualifier)
+              (let ((kept (List reject
+                            (fn (_ c) (List any? (fn (_ e) (%sql-star-named? c e)) excludes))
+                            own)))
+                (List map (fn (_ c) (%sql-star-column c replaces (List third lists)))
+                          (%sql-star-once
+                            (if (null? qualifier) (%sql-star-shown kept) kept)
+                            replaces ()))))))))))
 
 ; ITEMS with each star replaced by the items it stands for
 (def %sql-expand
   (fn (_ items columns)
-    (List flat-map
-      (fn (_ item)
-        (if (eq? (first (first item)) (lit star))
-          (%sql-star (List second (first item)) columns)
-          (list item)))
-      items)))
+    (let ((all (List flat-map
+                 (fn (_ item)
+                   (if (eq? (first (first item)) (lit star))
+                     (%sql-star (first item) columns)
+                     (list item)))
+                 items)))
+      (if (null? all)
+        (error "Binder Error: SELECT list is empty after resolving * expressions!")
+        all))))
 
 ; An item's heading: its alias, a column's name as the table has it, or the
 ; expression spelled out

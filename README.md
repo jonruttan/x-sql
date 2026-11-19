@@ -71,6 +71,10 @@ What is built:
   `WHERE`, `ORDER BY` with `ASC`, `DESC` and `NULLS FIRST` or `LAST`,
   `LIMIT` and `OFFSET`; and DuckDB's order, `FROM t` alone or
   `FROM t SELECT ...`.
+- **Star lists.** After `*` or `t.*`: `EXCLUDE (column, ...)` leaves
+  columns out, `REPLACE (expression AS column, ...)` puts an expression in
+  a column's place, and `RENAME (column AS name, ...)` shows a column
+  under another name, in that order when there is more than one.
 - **Joins.** `JOIN ... ON`, `LEFT`, `RIGHT` and `FULL [OUTER] JOIN`,
   `CROSS JOIN`, and tables listed with commas; `JOIN ... USING (...)` and
   `NATURAL JOIN`, inner and left, the shared columns shown once; a table
@@ -140,9 +144,9 @@ answered differently.
 
 In this order:
 
-1. DuckDB's friendlier forms: `SELECT * EXCLUDE`, lists and structs, and
-   with them the nested values of a JSON file; a CSV's separator and its
-   other options; Parquet.
+1. DuckDB's friendlier forms: lists and structs, and with them the
+   nested values of a JSON file; a CSV's separator and its other options;
+   Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function, `-f FILE` and statements on standard input.
 3. The servers the rest of the way: a certificate authority of one's own for
