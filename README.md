@@ -21,7 +21,7 @@ its way of showing a result.
 
 ## Status
 
-Pre-release: no release has been cut. Paired with x-lang v0.57.0
+Pre-release: no release has been cut. Paired with x-lang v0.58.0
 (`lang.xon` is the checkable row).
 
 What is built:
