@@ -4,7 +4,9 @@
 
 A database language on [x-lang](https://github.com/jonruttan/x-lang),
 loaded as a lang, following [DuckDB](https://duckdb.org/)'s dialect and
-its way of showing a result.
+its way of showing a result. The names of its functions and the order
+of their arguments are DuckDB's; what `.help` says of them is written
+here.
 
     x -l sql                                  # a prompt
     x -l sql -- -c "SELECT 1 + 2 AS three"    # run and exit
@@ -170,7 +172,7 @@ What is built:
   A line is coloured as it is typed, by the grammar `sql/syntax.x`, in
   the colours of x-lang's theme; brackets take their depth's colour and
   the pair beside the cursor is inverse. Tab completes a keyword, a
-  type, a function, a table or a column. `.help` and `.help TOPIC`,
+  type, a function, a table or a column. `.help`, `.help TOPIC` and, for a function, `.help NAME`,
   `.tables`, `.schema [table]` and `.quit`. `x -l sql -f FILE` runs a
   file of statements and of these commands, here or at a server whose
   URL follows `--`; the first statement that fails ends the run with
@@ -207,8 +209,7 @@ In this order:
 
 1. DuckDB's friendlier forms: a CSV's quote, escape and comment marks;
    Parquet.
-2. The prompt: coloured values in a result, paging a long one, a help
-   topic for every function.
+2. The prompt: Tab offering every function's name.
 3. The servers the rest of the way: a certificate authority of one's own for
    `verify-full`; a password asked for at the prompt; the server's tables
    and columns in `.tables`, `.schema` and Tab; a query cancelled with

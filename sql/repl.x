@@ -35,7 +35,8 @@
 (import sql/eval sql-type-name)
 (import sql/render sql-max-rows!)
 (import sql/number sql-decimal-read)
-(import sql/help sql-help-topics sql-help-topic sql-help-show sql-help-index)
+(import sql/help sql-help-topics sql-help-topic sql-help-show sql-help-index
+  sql-help-function sql-help-function-show)
 
 ; --- a line's colours --------------------------------------------------------
 
@@ -298,11 +299,13 @@
         (%sql-schema rest-of-line)))
     (method help (self rest-of-line)
       (if (= (Str8 length rest-of-line) 0) (sql-help-index)
-        (let ((topic (sql-help-topic rest-of-line)))
-          (if (null? topic)
-            (do (display (Str8 append "no help on " rest-of-line "; .help lists the topics"))
-                (newline))
-            (sql-help-show topic)))))))
+        (let ((topic (sql-help-topic rest-of-line))
+              (function (sql-help-function rest-of-line)))
+          (match
+            ((not (null? topic)) (sql-help-show topic))
+            ((not (null? function)) (sql-help-function-show function rest-of-line))
+            (#t (do (display (Str8 append "no help on " rest-of-line "; .help lists the topics"))
+                    (newline)))))))))
 
 ; LINE without its dot: the command's name, and the rest of the line
 (def %sql-dot
