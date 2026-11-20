@@ -134,7 +134,11 @@ What is built:
   separator is found, a comma, a semicolon, a tab or a bar. `read_csv`
   and `read_json`; `read_csv` takes `delim` (or `sep`), `header`,
   `skip`, `nullstr`, `names`, `columns`, `types` and `all_varchar`, as
-  `read_csv('f.csv', delim = ';', header = false)`. `COPY table TO 'file'`, `COPY
+  `read_csv('f.csv', delim = ';', header = false)`. `sqlite_scan('file.db',
+  'table')` is a table of a SQLite database file, read from the file's
+  pages, its columns in DuckDB's types for their declared ones; a view, a
+  table made `WITHOUT ROWID` and a column DuckDB reads as a BLOB are not
+  read yet. `COPY table TO 'file'`, `COPY
   (SELECT ...) TO 'file'` and `COPY table FROM 'file'`, as CSV or as
   JSON, an object a line, a list written as an array and a struct as an
   object; `COPY` takes `DELIMITER` (or `SEP`) and `NULLSTR` beside

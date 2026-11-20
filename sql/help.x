@@ -129,6 +129,8 @@
             "read_csv('file', delim = ';')   the separator said; found when not: , ; tab |"
             "  header = false, skip = 2, nullstr = 'NA', names = ['a', 'b'],"
             "  types = {'a': 'DOUBLE'}, columns = {...}, all_varchar = true"
+            "sqlite_scan('file.db', 'table') a table of a SQLite database file; its"
+            "  columns' types are DuckDB's for their declared types"
             "COPY table TO 'file' [(FORMAT csv | json, HEADER [true | false],"
             "                       DELIMITER ';', NULLSTR 'NA')]"
             "COPY (SELECT ...) TO 'file'"
@@ -638,7 +640,10 @@
           "files" (list "read_csv_auto"))
     (list "read_json" "read_json('file')"
           "a JSON file as a table, whatever its name ends in"
-          "files" (list "read_json_auto" "read_ndjson"))))
+          "files" (list "read_json_auto" "read_ndjson"))
+    (list "sqlite_scan" "sqlite_scan('file', 'table')"
+          "a table of a SQLite database file"
+          "files" (list))))
 
 ; The function NAME names, by its own name or another of its names.  The
 ; rows' names are in lower case, so NAME is folded once and compared as it

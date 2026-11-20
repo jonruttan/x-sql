@@ -55,7 +55,8 @@
 ;
 ; A table of a FROM is a name, a select statement in parentheses, or a
 ; file, (file PATH FORMAT [OPTIONS]): a string, or a call of a function that reads
-; one, FORMAT then the format it reads, nil for a string.
+; one, FORMAT then the format it reads, nil for a string; or a table of a
+; SQLite database file, (sqlite PATH TABLE).
 ;
 ;   (copy-to SOURCE PATH FORMAT HEADER)   SOURCE a table's name or a select
 ;                                         statement; FORMAT a name or nil
@@ -1138,6 +1139,9 @@
       ((and (not (null? ts)) (eq? (first (first ts)) (lit str)))
         (pair (list (lit file) (List second (first ts)) ()) (rest ts)))
       ((%sql-file-call? ts) (%sql-file-call ts))
+      ((%sql-sqlite-call? ts)
+        (pair (list (lit sqlite) (List second (List third ts)) (List second (List ref 4 ts)))
+              (List drop 6 ts)))
       ((and (%sql-word? ts "UNNEST") (%sql-op? (rest ts) "("))
         (%sql-unnest-call (%sql-call "unnest" (rest (rest ts)))))
       (#t (pair (%sql-name ts) (rest ts))))))
@@ -1145,6 +1149,15 @@
 (def %sql-file-function
   (fn (_ name)
     (List find (fn (_ row) (str=? (first row) (sql-lower name))) sql-file-functions)))
+
+; TS starts with sqlite_scan('file', 'table')
+(def %sql-sqlite-call?
+  (fn (_ ts)
+    (and (>= (List length ts) 6) (eq? (first (first ts)) (lit id))
+         (sql-same-name? (List second (first ts)) "sqlite_scan")
+         (%sql-op? (rest ts) "(") (eq? (first (List third ts)) (lit str))
+         (%sql-op? (List drop 3 ts) ",") (eq? (first (List ref 4 ts)) (lit str))
+         (%sql-op? (List drop 5 ts) ")"))))
 
 ; TS starts with a function that reads a file, a string first in its
 ; parentheses
