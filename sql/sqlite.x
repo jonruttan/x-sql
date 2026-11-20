@@ -25,6 +25,9 @@
 ; DOUBLE, and anything else a VARCHAR.  A column with no declared type, or
 ; a BLOB, is DuckDB's BLOB, which is not built: such a table is refused by
 ; that name.
+;
+; A table made WITHOUT ROWID keeps its rows in the tree of an index, in the
+; order of its key, each record with the key's columns first.
 
 (module sql/sqlite)
 (import x/type/list)
@@ -238,12 +241,13 @@
 (def %sq-page-number 4)
 (def %sq-cell-place 2)
 
-; How much of a record of TOTAL bytes is on its leaf, by SQLite's rule:
+; How much of a record of TOTAL bytes is on its page, by SQLite's rule:
 ; all of it when it fits, and when not the least the page keeps, with as
-; much more as leaves the overflow pages full
+; much more as leaves the overflow pages full.  A page of an index, INDEX,
+; keeps less of a long record than a leaf of a table does.
 (def %sq-local
-  (fn (_ usable total)
-    (let ((most (- usable 35))
+  (fn (_ usable total index)
+    (let ((most (if index (- (Num quotient (* (- usable 12) 64) 255) 23) (- usable 35)))
           (least (- (Num quotient (* (- usable 12) 32) 255) 23)))
       (if (<= total most) total
         (let ((kept (+ least (Num remainder (- total least) (- usable %sq-page-number)))))
@@ -259,20 +263,22 @@
           (List append (%sq-bytes buf %sq-page-number here)
                        (self db (%sq-uint buf 0 %sq-page-number) (- left here))))))))
 
+; The TOTAL bytes of the record that starts at AT in BUF, the rest of it
+; read from its overflow pages when it is longer than the page keeps
+(def %sq-payload
+  (fn (_ db buf at total index)
+    (let ((local (%sq-local (db get (lit usable)) total index)))
+      (if (= local total) (%sq-bytes buf at local)
+        (List append
+          (%sq-bytes buf at local)
+          (%sq-overflow db (%sq-uint buf (+ at local) %sq-page-number) (- total local)))))))
+
 ; The row of a leaf's cell at AT, as (ROWID . BYTES of its record)
 (def %sq-leaf-row
   (fn (_ db buf at)
     (let ((total (%sq-varint-at buf at)))
-      (let ((rowid (%sq-varint-at buf (rest total)))
-            (local (%sq-local (db get (lit usable)) (first total))))
-        (pair (first rowid)
-              (if (= local (first total))
-                (%sq-bytes buf (rest rowid) local)
-                (List append
-                  (%sq-bytes buf (rest rowid) local)
-                  (%sq-overflow db
-                    (%sq-uint buf (+ (rest rowid) local) %sq-page-number)
-                    (- (first total) local)))))))))
+      (let ((rowid (%sq-varint-at buf (rest total))))
+        (pair (first rowid) (%sq-payload db buf (rest rowid) (first total) #f))))))
 
 ; The rows of the tree whose top is page N, in the order of their rowids.
 ; Page 1 has the file's header before its own.  What reading the pages before
@@ -299,6 +305,46 @@
                   (places %sq-interior-header))
                 (self db (%sq-uint buf (+ head %sq-last-at) %sq-page-number))))
             (#t (error "Invalid Input Error: the SQLite file has a page that is no page of a table"))))))))
+
+; The kinds of page an index's tree has.  A table made WITHOUT ROWID keeps
+; its rows in one: every cell is a row's record, an interior page's too.
+(def %sq-index-interior 2)
+(def %sq-index-leaf 10)
+
+; The record of an index's cell whose record's length is written at AT,
+; as (nil . BYTES): a row with no rowid
+(def %sq-index-row
+  (fn (_ db buf at)
+    (let ((total (%sq-varint-at buf at)))
+      (pair () (%sq-payload db buf (rest total) (first total) #t)))))
+
+; The rows of the index tree whose top is page N, in the order of their
+; keys: under an interior page, the rows of each cell's page and then the
+; cell's own row, and after them all the rows of its last page
+(def %sq-index-rows
+  (fn (self db n)
+    (let ((buf (%sq-page db n))
+          (head (if (= n 1) %sq-header-size 0)))
+      (let ((kind (%sq-byte buf head))
+            (count (%sq-uint buf (+ head %sq-cells-at) %sq-cell-place)))
+        (let ((places (fn (_ header)
+                        (List map
+                          (fn (_ i) (%sq-uint buf (+ head header (* i %sq-cell-place)) %sq-cell-place))
+                          (List range 0 count)))))
+          (match
+            ((= kind %sq-index-leaf)
+              (do (Heap collect)
+                  (List map (fn (_ at) (%sq-index-row db buf at)) (places %sq-leaf-header))))
+            ((= kind %sq-index-interior)
+              (List append
+                (List flat-map
+                  (fn (_ at)
+                    (List append
+                      (self db (%sq-uint buf at %sq-page-number))
+                      (list (%sq-index-row db buf (+ at %sq-page-number)))))
+                  (places %sq-interior-header))
+                (self db (%sq-uint buf (+ head %sq-last-at) %sq-page-number))))
+            (#t (error "Invalid Input Error: the SQLite file has a page that is no page of an index"))))))))
 
 ; --- a record ----------------------------------------------------------------
 
@@ -418,21 +464,45 @@
               (and (str=? words "integer")
                    (List any? (fn (_ tok) (%sq-word? tok (list "primary"))) after)))))))
 
-; The columns of the statement SQL made a table with, each (NAME TYPE
-; ROWID).  A table made WITHOUT ROWID keeps its rows another way, which is
-; not built.
+; The names of the columns a table's PRIMARY KEY is, in the key's order:
+; those of a constraint on the whole table, PRIMARY KEY (a, b), or the
+; one column that is declared with it.  PARTS are the parts of the CREATE
+; TABLE's list.
+(def %sq-key-names
+  (fn (_ parts)
+    (let ((whole (List find
+                   (fn (_ part)
+                     (and (not (null? part)) (%sq-word? (first part) (list "primary"))))
+                   parts)))
+      (if (null? whole)
+        (List map (fn (_ part) (%sq-name (first part)))
+          (List filter
+            (fn (_ part)
+              (and (not (null? part)) (not (%sq-word? (first part) %sq-table-words))
+                   (List any? (fn (_ tok) (%sq-word? tok (list "primary"))) (rest part))))
+            parts))
+        (List map (fn (_ part) (%sq-name (first part)))
+          (List reject null?
+            (first (%sq-parts (rest (List drop-while (fn (_ tok) (not (%sq-mark? tok "("))) whole))))))))))
+
+; What the statement SQL made a table with, as (COLUMNS KEYS): its
+; columns, each (NAME TYPE ROWID), and, of a table made WITHOUT ROWID, the
+; names of its key's columns; nil for any other table.  A table WITHOUT
+; ROWID has no column that is the row's own number.
 (def %sq-columns
   (fn (_ sql)
     (let ((tokens (List reject
                     (fn (_ tok) (List includes? (first tok) (list (lit blank) (lit comment))))
                     (sql-lex sql))))
       (let ((parts (%sq-parts (rest (List drop-while (fn (_ tok) (not (%sq-mark? tok "("))) tokens)))))
-        (when (List any? (fn (_ tok) (%sq-word? tok (list "without"))) (rest parts))
-          (error "Not implemented Error: a SQLite table made WITHOUT ROWID"))
-        (List map %sq-column
-          (List reject
-            (fn (_ part) (or (null? part) (%sq-word? (first part) %sq-table-words)))
-            (first parts)))))))
+        (let ((columns (List map %sq-column
+                         (List reject
+                           (fn (_ part) (or (null? part) (%sq-word? (first part) %sq-table-words)))
+                           (first parts)))))
+          (if (List any? (fn (_ tok) (%sq-word? tok (list "without"))) (rest parts))
+            (list (List map (fn (_ c) (list (first c) (List second c) #f)) columns)
+                  (%sq-key-names (first parts)))
+            (list columns ())))))))
 
 ; The schema's row for the table NAME: (KIND NAME TABLE PAGE SQL), each a
 ; record's value
@@ -486,6 +556,27 @@
                             (+ n 1)))))))
       (go held () 1))))
 
+; Whether the column C has the name NAME, in any case
+(def %sq-named?
+  (fn (_ c name) (str=? (sql-lower (first c)) (sql-lower name))))
+
+; The rows of a table made WITHOUT ROWID, whose tree starts on page N.  A
+; row's record has the key's columns first, in the key's order, and then
+; the rest in the table's; each row is put back in the table's order.
+(def %sq-keyed-rows
+  (fn (_ db columns keys n)
+    (let ((stored (List append
+                    (List map (fn (_ k) (List find (fn (_ c) (%sq-named? c k)) columns)) keys)
+                    (List reject
+                      (fn (_ c) (List any? (fn (_ k) (%sq-named? c k)) keys))
+                      columns))))
+      (let ((places (List map
+                      (fn (_ c) (List index-of c stored))
+                      columns)))
+        (List map
+          (fn (_ row) (List map (fn (_ at) (List ref at row)) places))
+          (%sq-typed-rows stored (%sq-index-rows db n)))))))
+
 ; The table NAME of the open file DB: (NAMES TYPES ROWS), each row a list
 ; of sql/eval's values.  A record with fewer values than the table has
 ; columns, one written before a column was added, has NULLs for the rest.
@@ -496,12 +587,15 @@
         (error (Str8 append "Catalog Error: Table with name " name " does not exist!")))
       (when (str=? (rest (first row)) "view")
         (error "Not implemented Error: a view of a SQLite file"))
-      (let ((columns (%sq-columns (rest (List ref 4 row)))))
-        (when (List any? (fn (_ c) (eq? (List second c) (lit blob))) columns)
-          (error "Not implemented Error: the type BLOB"))
-        (list (List map first columns)
-              (List map (fn (_ c) (List second c)) columns)
-              (%sq-typed-rows columns (%sq-rows db (rest (List ref 3 row)))))))))
+      (let ((made (%sq-columns (rest (List ref 4 row)))))
+        (let ((columns (first made)) (keys (List second made)))
+          (when (List any? (fn (_ c) (eq? (List second c) (lit blob))) columns)
+            (error "Not implemented Error: the type BLOB"))
+          (list (List map first columns)
+                (List map (fn (_ c) (List second c)) columns)
+                (if (null? keys)
+                  (%sq-typed-rows columns (%sq-rows db (rest (List ref 3 row))))
+                  (%sq-keyed-rows db columns keys (rest (List ref 3 row))))))))))
 
 ; The table NAME of the SQLite file at PATH, as %sq-table answers it.  The
 ; file is closed whether the table was read or an error was raised, and
