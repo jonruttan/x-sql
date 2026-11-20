@@ -115,6 +115,13 @@
 (def %sql-list? (fn (_ t) (and (pair? t) (eq? (first t) (lit list)))))
 (def %sql-struct? (fn (_ t) (and (pair? t) (eq? (first t) (lit struct)))))
 (def %sql-nested? (fn (_ t) (or (%sql-list? t) (%sql-struct? t))))
+
+; A struct whose fields have no names, which DuckDB calls a tuple: every
+; field's name is the empty text
+(def %sql-tuple?
+  (fn (_ t)
+    (and (%sql-struct? t)
+         (List all? (fn (_ f) (= (Str8 length (first f)) 0)) (rest t)))))
 (def %sql-double? (fn (_ t) (eq? t (lit double))))
 (def %sql-real? (fn (_ t) (eq? t (lit real))))
 
@@ -167,6 +174,14 @@
       ((%sql-list? t)
         (Str8 append (if (%sql-null-type? (List second t)) "\"NULL\"" (self (List second t)))
                      "[]"))
+      ((and (%sql-tuple? t) (null? (rest t))) "TUPLE")
+      ((%sql-tuple? t)
+        (Str8 append "TUPLE("
+          (Str8 join ", "
+            (List map
+              (fn (_ f) (if (%sql-null-type? (List second f)) "\"NULL\"" (self (List second f))))
+              (rest t)))
+          ")"))
       ((%sql-struct? t)
         (Str8 append "STRUCT("
           (Str8 join ", "
@@ -324,6 +339,11 @@
         ((null? x) "NULL")
         ((%sql-list? t)
           (Str8 append "[" (Str8 join ", " (List map %sql-nested-text (%sql-elements v))) "]"))
+        ; A tuple of one member is written with a comma after it
+        ((%sql-tuple? t)
+          (Str8 append "("
+            (Str8 join ", " (List map %sql-nested-text (%sql-members v)))
+            (if (null? (rest (rest t))) ",)" ")")))
         ((%sql-struct? t)
           (Str8 append "{"
             (Str8 join ", "
@@ -1090,6 +1110,28 @@
       (pair (List second (List ref i (rest (first s))))
             (if (%sql-null? s) () (List ref i (rest s)))))))
 
+; The member of the tuple S at the place the integer value I says, from 1
+(def %sql-tuple-member
+  (fn (_ s i)
+    (let ((n (List length (rest (first s)))) (at (rest i)))
+      (unless (%sql-tuple? (first s))
+        (error "Binder Error: struct_extract with an integer key can only be used on unnamed structs, use a string key instead"))
+      (when (or (null? at) (< at 1) (> at n))
+        (error (Str8 str "Binder Error: Key index " (if (null? at) "NULL" at)
+                         " for struct_extract out of range - expected an index between 1 and " n)))
+      (pair (List second (List ref (- at 1) (rest (first s))))
+            (if (%sql-null? s) () (List ref (- at 1) (rest s)))))))
+
+; A struct's field: the one a text names, or the member of a tuple at a
+; place
+(def %sql-struct-part
+  (fn (_ name args)
+    (let ((s (first args)) (key (List second args)))
+      (match
+        ((eq? (first key) (lit varchar)) (%sql-struct-field s (rest key)))
+        ((%sql-int? (first key)) (%sql-tuple-member s key))
+        (#t (%sql-no-match name args))))))
+
 ; The I-th element of a list or character of a text, or the field of a
 ; struct that a text names
 (def %sql-extract
@@ -1098,8 +1140,7 @@
     (let ((a (first args)) (i (List second args)))
       (match
         ((%sql-struct? (first a))
-          (do (unless (eq? (first i) (lit varchar)) (%sql-no-match name args))
-              (%sql-struct-field a (rest i))))
+          (%sql-struct-part name args))
         ((%sql-list? (first a))
           (let ((at (%sql-place i)))
             (pair (List second (first a))
@@ -1421,10 +1462,40 @@
               (List map (fn (_ p) (rest (List second p))) pairs))))
     (method struct_extract (self args node)
       (%sql-arity "struct_extract" args (list 2))
-      (unless (and (%sql-struct? (first (first args)))
-                   (eq? (first (List second args)) (lit varchar)))
-        (%sql-no-match "struct_extract" args))
-      (%sql-struct-field (first args) (rest (List second args))))
+      (unless (%sql-struct? (first (first args))) (%sql-no-match "struct_extract" args))
+      (%sql-struct-part "struct_extract" args))
+    ; Its arguments as a tuple, a struct whose fields have no names
+    (method row (self args node)
+      (when (null? args) (error "Not implemented Error: a row of nothing"))
+      (pair (pair (lit struct) (List map (fn (_ a) (list "" (first a))) args))
+            (List map rest args)))
+    ; A list of tuples: the first elements of every list, then the second,
+    ; and so on.  A shorter list is filled out with NULLs, or, when a
+    ; truth is written last and is true, the longer are cut to it.  A NULL
+    ; list is an empty one.
+    (method list_zip (self args node)
+      (when (null? args) (error "Binder Error: Provide at least one argument to list_zip"))
+      (let ((flagged (eq? (first (List last args)) (lit boolean))))
+        (let ((lists (if flagged (List take (- (List length args) 1) args) args)))
+          (when (null? lists)
+            (error "Binder Error: Provide at least one list argument to list_zip"))
+          (unless (List all? (fn (_ l) (or (%sql-list? (first l)) (%sql-null-type? (first l)))) lists)
+            (error "Binder Error: Parameter type needs to be List"))
+          (let ((held (List map (fn (_ l) (if (%sql-null? l) () (first (rest l)))) lists)))
+            (let ((lengths (List map (fn (_ l) (List length l)) held)))
+              (pair (list (lit list)
+                      (pair (lit struct)
+                        (List map
+                          (fn (_ l) (list "" (if (%sql-list? (first l)) (List second (first l)) (lit null))))
+                          lists)))
+                    (list (List map
+                            (fn (_ k)
+                              (List map (fn (_ l n) (if (< k n) (List ref k l) ())) held lengths))
+                            (List range 0
+                              (if (and flagged (eq? (rest (List last args)) #t))
+                                (List fold (fn (_ a b) (if (< b a) b a)) (first lengths) lengths)
+                                (List fold (fn (_ a b) (if (> b a) b a)) 0 lengths)))))))))))
+    (method array_zip (self args node) (SqlFunction list_zip args node))
     (method array_extract (self args node) (%sql-extract "array_extract" args))
     (method list_extract (self args node) (%sql-extract "list_extract" args))
     (method list_element (self args node) (%sql-extract "list_element" args))
@@ -2633,7 +2704,8 @@
         (pair "year" "\"year\"") (pair "month" "\"month\"") (pair "day" "\"day\"")
         (pair "hour" "\"hour\"") (pair "minute" "\"minute\"")
         (pair "second" "\"second\"") (pair "quarter" "\"quarter\"")
-        (pair "range" "\"range\"") (pair "filter" "\"filter\"")))
+        (pair "range" "\"range\"") (pair "filter" "\"filter\"")
+        (pair "row" "\"row\"")))
 
 (def %sql-call-name
   (fn (_ name)
@@ -3202,10 +3274,15 @@
     ; and a member T has no field for is left out
     (method struct (self v t)
       (unless (%sql-struct? (first v)) (%sql-no-cast (first v) t))
+      (when (and (%sql-tuple? (first v)) (not (= (List length (first v)) (List length t))))
+        (error (Str8 str "Mismatch Type Error: Type " (%sql-type-name (first v))
+                         " does not match with " (%sql-type-name t)
+                         ". Cannot cast STRUCTs of different size")))
       (let ((held (List map (fn (_ f m) (pair (first f) m)) (rest (first v)) (%sql-members v))))
-        (let ((found (List map
-                       (fn (_ f) (List find (fn (_ h) (sql-same-name? (first h) (first f))) held))
-                       (rest t))))
+        (let ((found (if (%sql-tuple? (first v)) held
+                       (List map
+                         (fn (_ f) (List find (fn (_ h) (sql-same-name? (first h) (first f))) held))
+                         (rest t)))))
           (when (List all? (fn (_ h) (null? h)) found)
             (error (Str8 str "Binder Error: STRUCT to STRUCT cast must have at least one matching member, inputs are ("
                              (%sql-type-name (first v)) ") and (" (%sql-type-name t) ")")))

@@ -77,8 +77,11 @@ What is built:
   t, unnest(t.tags) AS u(tag)`. In a `SELECT`'s list `unnest(x,
   recursive := true)` unnests every level, lists inside lists and
   structs inside structs, `max_depth := n` so many, and
-  `keep_parent_names := true` names a field `b.c`. Not yet:
-  `list_zip` and the unnamed structs it answers, the statistics
+  `keep_parent_names := true` names a field `b.c`.
+  `list_zip(list, ...)` is a list of tuples, the lists' first elements
+  and then their second; a tuple is a struct whose fields have no
+  names, written `(1, 'a')` or `row(1, 'a')`, shown as `(1, a)`, and
+  its members are read by place, `t[1]`. Not yet: the statistics
   (`list_median`, `list_stddev_samp` and the like), `list_histogram`,
   the bit aggregates, the distances between lists of numbers, maps,
   and text read as a list (`'[1, 2]'::INT[]`).
