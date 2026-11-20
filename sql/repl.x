@@ -33,6 +33,8 @@
   sql-connection-secure?)
 (import sql/exec sql-table-names sql-table-columns)
 (import sql/eval sql-type-name)
+(import sql/render sql-max-rows!)
+(import sql/number sql-decimal-read)
 (import sql/help sql-help-topics sql-help-topic sql-help-show sql-help-index)
 
 ; --- a line's colours --------------------------------------------------------
@@ -198,7 +200,7 @@
           (sql-table-names))))))
 
 (def %sql-dot-names
-  (list ".connect" ".disconnect" ".exit" ".help" ".quit" ".schema" ".tables"))
+  (list ".connect" ".disconnect" ".exit" ".help" ".maxrows" ".quit" ".schema" ".tables"))
 
 ; The seam the editor calls: the word before the cursor and the names it
 ; could become, sorted and each once.  A line that starts with a dot
@@ -280,6 +282,14 @@
     (method disconnect (self rest-of-line)
       (sql-disconnect!)
       (%sql-prompt!))
+    ; The most rows of a result that are shown, DuckDB's command for it
+    (method maxrows (self rest-of-line)
+      (let ((tokens (sql-lex rest-of-line)))
+        (if (and (not (null? tokens)) (null? (rest tokens))
+                 (eq? (first (first tokens)) (lit num)) (= (List third (first tokens)) 1))
+          (sql-max-rows! (first (sql-decimal-read rest-of-line)))
+          (do (display "usage: .maxrows N, the most rows of a result that are shown")
+              (newline)))))
     (method tables (self rest-of-line)
       (List for-each (fn (_ name) (display name) (newline)) (sql-table-names)))
     (method schema (self rest-of-line)

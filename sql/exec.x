@@ -327,38 +327,37 @@
             (pair (%sql-unnest-depth (first v) (List second plan)) (first (rest v)))
             (pair 1 ())))))))
 
-(def %sql-longest
-  (fn (_ lists)
-    (List fold (fn (_ most l) (if (> (List length l) most) (List length l) most)) 0 lists)))
-
-; The element of ELEMS at K, nil past its end
-(def %sql-at
-  (fn (_ elems k) (if (< k (List length elems)) (List ref k elems) ())))
-
 ; The rows LISTS unnest to, each list (LEVELS . ELEMS) and each row a value
 ; from every list.  Lists of one level go side by side, a shorter one
 ; filled out with NULLs.  The lists with the most levels have one taken
 ; off first, and the rest are unnested again beside each of their
-; elements, which is how DuckDB answers unnests of unlike depths.
+; elements, which is how DuckDB answers unnests of unlike depths.  The
+; lists are walked in step, an element of each at a time.
 (def %sql-unnest-rows
   (fn (self lists)
     (let ((most (List fold (fn (_ m l) (if (> (first l) m) (first l) m)) 1 lists)))
-      (if (= most 1)
-        (List map
-          (fn (_ k) (List map (fn (_ l) (%sql-at (rest l) k)) lists))
-          (List range 0 (%sql-longest (List map rest lists))))
-        (List flat-map
-          (fn (_ k)
-            (self (List map
-                    (fn (_ l)
-                      (if (= (first l) most)
-                        (let ((e (%sql-at (rest l) k)))
-                          (pair (- most 1) (if (null? e) () (first e))))
-                        l))
-                    lists)))
-          (List range 0
-            (%sql-longest
-              (List map rest (List filter (fn (_ l) (= (first l) most)) lists)))))))))
+      (let ((walk (fn (walk held groups)
+                    (if (List all? (fn (_ l) (or (< (first l) most) (null? (rest l)))) held)
+                      (List flat-map (fn (_ group) group) (List reverse groups))
+                      (walk
+                        (List map
+                          (fn (_ l)
+                            (if (or (< (first l) most) (null? (rest l))) l
+                              (pair most (rest (rest l)))))
+                          held)
+                        (pair
+                          (if (= most 1)
+                            (list (List map (fn (_ l) (if (null? (rest l)) () (first (rest l)))) held))
+                            (self (List map
+                                    (fn (_ l)
+                                      (match
+                                        ((< (first l) most) l)
+                                        ((or (null? (rest l)) (null? (first (rest l))))
+                                          (pair (- most 1) ()))
+                                        (#t (pair (- most 1) (first (first (rest l)))))))
+                                    held)))
+                          groups))))))
+        (walk lists ())))))
 
 ; SCOPES with each one once for every row its UNNESTS unnest to, an
 ; unnest's value held in the scope under its node as a window's is.  A

@@ -159,6 +159,10 @@ What is built:
   terminal cells, headed by the alias, the column's name, or the
   expression spelled out. A result of ten rows or more has its rows
   counted under the box, and its columns when the box has room. On a
+  terminal a result of more than forty rows is cut as DuckDB cuts it,
+  to its first and last rows with dots between, and says how many it
+  shows; `.maxrows N` says another most. To a file or a pipe every row
+  is written. On a
   terminal the box and the types are dim, the names bold, a NULL dim,
   and a value the colour the theme gives its kind in a statement: a
   number, a text, a truth.
