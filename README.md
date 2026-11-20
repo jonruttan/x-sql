@@ -74,7 +74,10 @@ What is built:
   comprehension. `unnest(list)` in the list of a `SELECT` is a row for each element, two
   of them side by side; of a struct, a column for each field. In a
   `FROM` it is a table, read for each row of the table before it: `FROM
-  t, unnest(t.tags) AS u(tag)`. Not yet: `unnest(x, recursive := true)`,
+  t, unnest(t.tags) AS u(tag)`. In a `SELECT`'s list `unnest(x,
+  recursive := true)` unnests every level, lists inside lists and
+  structs inside structs, `max_depth := n` so many, and
+  `keep_parent_names := true` names a field `b.c`. Not yet:
   `list_zip` and the unnamed structs it answers, the statistics
   (`list_median`, `list_stddev_samp` and the like), `list_histogram`,
   the bit aggregates, the distances between lists of numbers, maps,

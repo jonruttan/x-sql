@@ -158,6 +158,8 @@
             "list(x)  array_agg(x)          a group's values as a list"
             "unnest(list)                   a row for each element, in a SELECT's"
             "                               list or as a table: FROM t, unnest(t.l) AS u(x)"
+            "unnest(x, recursive := true)   every level of lists and of structs;"
+            "                               max_depth := n, keep_parent_names := true"
             "Lists: len list_contains list_position list_concat || list_append"
             "list_prepend list_sort list_reverse_sort list_reverse flatten"
             "list_slice list_extract list_sum list_min list_max list_avg"

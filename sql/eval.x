@@ -2453,6 +2453,9 @@
     ; A lambda is read by the function it is given to, and is nothing
     ; anywhere else
     (method lambda (self node scope) (error "Binder Error: invalid lambda expression"))
+    ; An argument written name := value is its value to a function that
+    ; reads no names
+    (method named (self node scope) (sql-eval (List third node) scope))
     (method int (self node scope)
       (pair (%sql-int-type (List second node)) (List second node)))
     (method dec (self node scope)
@@ -2804,6 +2807,9 @@
                      " OVER (" (Str8 join " " (%sql-window-texts node)) ")")))
     (method unnest (self node)
       (Str8 append "unnest(" (Str8 join ", " (List map sql-expr-name (List second node))) ")"))
+    (method named (self node)
+      (Str8 append (%sql-key-name (List second node)) " := "
+                   (sql-expr-name (List third node))))
     (method lambda (self node)
       (Str8 append "(lambda " (Str8 join ", " (List second node)) ": "
                    (sql-expr-name (List third node)) ")"))
