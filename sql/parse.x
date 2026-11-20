@@ -54,7 +54,7 @@
 ;   (drop TABLE IF-EXISTS)
 ;
 ; A table of a FROM is a name, a select statement in parentheses, or a
-; file, (file PATH FORMAT): a string, or a call of a function that reads
+; file, (file PATH FORMAT [OPTIONS]): a string, or a call of a function that reads
 ; one, FORMAT then the format it reads, nil for a string.
 ;
 ;   (copy-to SOURCE PATH FORMAT HEADER)   SOURCE a table's name or a select
@@ -1137,10 +1137,7 @@
       ((and (%sql-op? ts "(") (%sql-query? (rest ts))) (%sql-closed-query (rest ts)))
       ((and (not (null? ts)) (eq? (first (first ts)) (lit str)))
         (pair (list (lit file) (List second (first ts)) ()) (rest ts)))
-      ((%sql-file-call? ts)
-        (pair (list (lit file) (List second (List third ts))
-                    (List second (%sql-file-function (List second (first ts)))))
-              (List drop 4 ts)))
+      ((%sql-file-call? ts) (%sql-file-call ts))
       ((and (%sql-word? ts "UNNEST") (%sql-op? (rest ts) "("))
         (%sql-unnest-call (%sql-call "unnest" (rest (rest ts)))))
       (#t (pair (%sql-name ts) (rest ts))))))
@@ -1149,13 +1146,49 @@
   (fn (_ name)
     (List find (fn (_ row) (str=? (first row) (sql-lower name))) sql-file-functions)))
 
-; TS starts with a function that reads a file, a string in its parentheses
+; TS starts with a function that reads a file, a string first in its
+; parentheses
 (def %sql-file-call?
   (fn (_ ts)
     (and (>= (List length ts) 4) (eq? (first (first ts)) (lit id))
          (not (null? (%sql-file-function (List second (first ts)))))
          (%sql-op? (rest ts) "(") (eq? (first (List third ts)) (lit str))
-         (%sql-op? (List drop 3 ts) ")"))))
+         (or (%sql-op? (List drop 3 ts) ")") (%sql-op? (List drop 3 ts) ",")))))
+
+; TS after the mark that gives an option its value, = or :=; nil when TS
+; does not start with one
+(def %sql-after-gives
+  (fn (_ ts)
+    (match
+      ((%sql-op? ts "=") (rest ts))
+      ((and (%sql-op? ts ":") (%sql-op? (rest ts) "=")) (rest (rest ts)))
+      (#t ()))))
+
+; One option of a function that reads a file, name = value or name :=
+; value, as ((NAME EXPR) . tokens-left), the name in lower case
+(def %sql-file-option
+  (fn (_ ts)
+    (let ((after (if (or (null? ts)
+                         (not (List includes? (first (first ts)) (list (lit id) (lit kw)))))
+                   ()
+                   (%sql-after-gives (rest ts)))))
+      (if (null? after) (%sql-near ts)
+        (let ((e (%sql-expr after)))
+          (pair (list (sql-lower (List second (first ts))) (first e)) (rest e)))))))
+
+; A call of a function that reads a file, TS at its name, as the file
+; node with its options
+(def %sql-file-call
+  (fn (_ ts)
+    (let ((options (if (%sql-op? (List drop 3 ts) ",")
+                     (%sql-list %sql-file-option (List drop 4 ts))
+                     (pair () (List drop 3 ts)))))
+      (if (%sql-op? (rest options) ")")
+        (pair (list (lit file) (List second (List third ts))
+                    (List second (%sql-file-function (List second (first ts))))
+                    (first options))
+              (rest (rest options)))
+        (%sql-near (rest options))))))
 
 ; A table and its alias, after AS or bare
 (def %sql-source
@@ -1570,8 +1603,9 @@
           (pair (list (lit delete) table (first where)) (rest where))))
       (%sql-near ts))))
 
-; One option of a COPY, TS at its name: FORMAT and a name, or HEADER and
-; maybe true or false, as ((NAME VALUE) . tokens-left)
+; One option of a COPY, TS at its name: FORMAT and a name, HEADER and
+; maybe true or false, DELIMITER (or DELIM, or SEP) and a text, or NULLSTR
+; and a text, as ((NAME VALUE) . tokens-left)
 (def %sql-copy-option
   (fn (_ ts)
     (match
@@ -1582,8 +1616,19 @@
           ((%sql-kw? (rest ts) "TRUE") (pair (list (lit header) #t) (rest (rest ts))))
           ((%sql-kw? (rest ts) "FALSE") (pair (list (lit header) #f) (rest (rest ts))))
           (#t (pair (list (lit header) #t) (rest ts)))))
+      ((and (List any? (fn (_ word) (%sql-word? ts word)) (list "DELIMITER" "DELIM" "SEP"))
+            (not (null? (rest ts))) (eq? (first (List second ts)) (lit str)))
+        (pair (list "sep" (list (lit str) (List second (List second ts)))) (rest (rest ts))))
+      ((and (%sql-word? ts "NULLSTR")
+            (not (null? (rest ts))) (eq? (first (List second ts)) (lit str)))
+        (pair (list "nullstr" (list (lit str) (List second (List second ts)))) (rest (rest ts))))
       ((null? ts) (%sql-near ts))
       (#t (error (Str8 str "Not implemented Error: the COPY option " (List second (first ts))))))))
+
+; The options of a COPY that are a file's: those named by a text, each
+; (NAME EXPR) as a function that reads a file has them
+(def %sql-copy-file-options
+  (fn (_ options) (List filter (fn (_ o) (str? (first o))) options)))
 
 ; The options after a COPY's file, in parentheses or not there, as an
 ; alist of (NAME VALUE)
@@ -1612,9 +1657,11 @@
           (pair (if (%sql-word? after "TO")
                   (list (lit copy-to) (first source) path
                         (%sql-option (first options) (lit format) ())
-                        (%sql-option (first options) (lit header) #t))
+                        (%sql-option (first options) (lit header) #t)
+                        (%sql-copy-file-options (first options)))
                   (list (lit copy-from) (first source) path
-                        (%sql-option (first options) (lit format) ())))
+                        (%sql-option (first options) (lit format) ())
+                        (%sql-copy-file-options (first options))))
                 (rest options)))))))
 
 ; SET name = value, SET name TO value, and SET TIME ZONE value, the value
@@ -1662,4 +1709,14 @@
 
 (def sql-parse (fn (_ text) (%sql-statements (sql-tokenize text))))
 
-(provide sql/parse sql-parse)
+; The type TEXT names, as a cast reads it.  The reader of a type looks at
+; the token after it, so the text is read with a parenthesis after it, as
+; it stands in a cast.
+(def sql-type-read
+  (fn (_ text)
+    (let ((read (%sql-type (sql-tokenize (Str8 append text ")")))))
+      (if (and (%sql-op? (rest read) ")") (null? (rest (rest read))))
+        (first (first read))
+        (%sql-near (rest read))))))
+
+(provide sql/parse sql-parse sql-type-read)

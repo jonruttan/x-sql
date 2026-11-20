@@ -24,7 +24,7 @@ its way of showing a result.
 
 ## Status
 
-Pre-release: no release has been cut. Paired with x-lang v0.58.0
+Pre-release: no release has been cut. Paired with x-lang v0.59.0
 (`lang.xon` is the checkable row).
 
 What is built:
@@ -128,11 +128,15 @@ What is built:
   file is a table, its columns' types found from its values as DuckDB
   finds them. An array in a JSON file is a list and an object a struct,
   its fields in the order the file first has them; values that are not
-  all one of those are text, where DuckDB has a JSON type. `read_csv` and
-  `read_json`. `COPY table TO 'file'`, `COPY
+  all one of those are text, where DuckDB has a JSON type. A CSV's
+  separator is found, a comma, a semicolon, a tab or a bar. `read_csv`
+  and `read_json`; `read_csv` takes `delim` (or `sep`), `header`,
+  `skip`, `nullstr`, `names`, `columns`, `types` and `all_varchar`, as
+  `read_csv('f.csv', delim = ';', header = false)`. `COPY table TO 'file'`, `COPY
   (SELECT ...) TO 'file'` and `COPY table FROM 'file'`, as CSV or as
   JSON, an object a line, a list written as an array and a struct as an
-  object.
+  object; `COPY` takes `DELIMITER` (or `SEP`) and `NULLSTR` beside
+  `FORMAT` and `HEADER`.
 - **Subqueries.** A select statement in parentheses for its one value,
   after `[NOT] IN`, after `[NOT] EXISTS`, and as a table of a `FROM`;
   `WITH name AS (...)`, with the columns named after the name if
@@ -196,7 +200,7 @@ answered differently.
 
 In this order:
 
-1. DuckDB's friendlier forms: a CSV's separator and its other options;
+1. DuckDB's friendlier forms: a CSV's quote, escape and comment marks;
    Parquet.
 2. The prompt: coloured values in a result, paging a long one, a help
    topic for every function.
@@ -241,8 +245,8 @@ No script runs against Oracle's MySQL.
 - Groups come in the order their keys first appear; DuckDB promises no
   order.
 - A file is read whole into memory, and its types are found from every
-  row: it is for files of thousands of rows, not millions. A CSV is
-  separated by commas only. A JSON value that is a list or an object is
+  row: it is for files of thousands of rows, not millions. A CSV's
+  separator is one byte and its quote the double quote. A JSON value that is a list or an object is
   refused.
 - `USING` and `NATURAL` are not built for RIGHT and FULL joins, where
   DuckDB shows the shared column as whichever side has a row.

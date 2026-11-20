@@ -35,6 +35,7 @@
 (import x/sys/file)
 (import sql/lex sql-lex)
 (import sql/eval sql-cast sql-value-text sql-null? sql-numeric-type?)
+(import sql/parse sql-type-read)
 
 ; --- what a text is ----------------------------------------------------------
 
@@ -135,11 +136,103 @@
 
 ; --- CSV ---------------------------------------------------------------------
 
-; A field of a CSV as (VALUE . KIND): an empty one a NULL
+; A field of a CSV as (VALUE . KIND): an empty one a NULL, and one that
+; is NULLSTR, the text a file writes a NULL as, when there is one.  With
+; PLAIN every field is text whatever it could be read as.
 (def %sql-field
+  (fn (_ text nullstr plain)
+    (if (or (= (Str8 length text) 0) (and (not (null? nullstr)) (str=? text nullstr)))
+      (pair (pair (lit varchar) ()) ())
+      (pair (pair (lit varchar) text) (if plain (lit text) (%sql-kind text))))))
+
+; The names an option of a function that reads a CSV may have, and the
+; one each is held under
+(def %sql-csv-options
+  (list (pair "delim" "sep") (pair "sep" "sep") (pair "delimiter" "sep")
+        (pair "header" "header") (pair "skip" "skip") (pair "nullstr" "nullstr")
+        (pair "names" "names") (pair "column_names" "names")
+        (pair "columns" "columns")
+        (pair "types" "types") (pair "dtypes" "types") (pair "column_types" "types")
+        (pair "all_varchar" "all_varchar")))
+
+; The value OPTIONS has under NAME by any of its names; nil when none
+(def %sql-csv-option
+  (fn (_ options name)
+    (let ((held (List find
+                  (fn (_ o)
+                    (let ((row (List find (fn (_ r) (str=? (first r) (first o))) %sql-csv-options)))
+                      (and (not (null? row)) (str=? (rest row) name))))
+                  options)))
+      (if (null? held) () (rest held)))))
+
+; An option's value as a text, a truth, and a whole number
+(def %sql-option-text
+  (fn (_ v) (if (null? v) () (sql-cast v (lit varchar)))))
+
+(def %sql-option-true?
+  (fn (_ v) (eq? (sql-cast v (lit boolean)) #t)))
+
+; An option that is a struct of names and types' names, {'age': 'DOUBLE'},
+; as ((NAME . TYPE) ...)
+(def %sql-option-types
+  (fn (_ v)
+    (if (null? v) ()
+      (do (unless (and (pair? (first v)) (eq? (first (first v)) (lit struct)))
+            (error "Binder Error: the types of a file's columns are a struct of names and types"))
+          (List map (fn (_ f text) (pair (first f) (sql-type-read text)))
+                    (rest (first v)) (rest v))))))
+
+; TEXT without its first N lines
+(def %sql-lines-skipped
+  (fn (self text n)
+    (if (< n 1) text
+      (let ((at (Str8 index-of "\n" text)))
+        (if (null? at) ""
+          (self (Str8 sub (+ at 1) (Str8 length text) text) (- n 1)))))))
+
+; The separators a file is tried with when none is said, and how many of
+; its lines are read to find which
+(def %sql-separators (list "," ";" "\t" "|"))
+(def %sql-sniffed-lines 20)
+
+; The first N lines of TEXT
+(def %sql-lines-first
+  (fn (_ text n)
+    (let ((cut (fn (self at left)
+                 (if (< left 1) at
+                   (let ((next (Str8 index-of "\n" (Str8 sub at (Str8 length text) text))))
+                     (if (null? next) (Str8 length text) (self (+ at next 1) (- left 1))))))))
+      (Str8 sub 0 (cut 0 n) text))))
+
+; The separator of TEXT: the one of %sql-separators that reads its first
+; lines as rows all of one width, the widest; a comma when none makes
+; more than one column
+(def %sql-separator
   (fn (_ text)
-    (if (= (Str8 length text) 0) (pair (pair (lit varchar) ()) ())
-      (pair (pair (lit varchar) text) (%sql-kind text)))))
+    (let ((head (%sql-lines-first text %sql-sniffed-lines)))
+      (first
+        (List fold
+          (fn (_ best sep)
+            (let ((rows (guard (_ ()) (Csv parse-by sep head))))
+              (let ((width (if (null? rows) 0 (List length (first rows)))))
+                (if (and (> width (rest best))
+                         (List all? (fn (_ row) (= (List length row) width)) rows))
+                  (pair sep width)
+                  best))))
+          (pair "," 1)
+          %sql-separators)))))
+
+; A column's values, each (VALUE . KIND), as the type T
+(def %sql-column-as
+  (fn (_ column t)
+    (List map
+      (fn (_ c) (pair t (if (sql-null? (first c)) () (sql-cast (first c) t))))
+      column)))
+
+; NAMES with the first of them replaced by GIVEN
+(def %sql-renamed
+  (fn (_ names given)
+    (List append given (List drop (List length given) names))))
 
 ; A CSV's first row names its columns when every field of it is text that
 ; could be no other kind of value
@@ -406,23 +499,59 @@
 ; sql/eval's values
 (def-class SqlFormat ()
   (static
-    (method csv (self text)
-      (let ((rows (Csv parse text)))
-        (when (null? rows) (error "Invalid Input Error: the CSV file is empty"))
-        (let ((width (List length (first rows))))
-          (unless (List all? (fn (_ row) (= (List length row) width)) rows)
-            (error "Invalid Input Error: the rows of the CSV file are not all as wide as its first"))
-          (let ((headed (and (%sql-header? (first rows)) (not (null? (rest rows))))))
-            (let ((typed (%sql-typed-columns
-                           (%sql-as-columns
-                             (List map (fn (_ row) (List map %sql-field row))
-                                       (if headed (rest rows) rows))
-                             width)
-                           (List repeat width rest))))
-              (list (if headed (first rows) (%sql-numbered width))
-                    (first typed)
-                    (%sql-as-rows (List second typed))))))))
-    (method json (self text)
+    (method csv (self text options)
+      (let ((unknown (List find
+                       (fn (_ o) (null? (List find (fn (_ r) (str=? (first r) (first o))) %sql-csv-options)))
+                       options)))
+        (unless (null? unknown)
+          (error (Str8 append "Binder Error: Invalid named parameter \"" (first unknown)
+                              "\" for function read_csv"))))
+      (let ((body (let ((skip (%sql-csv-option options "skip")))
+                    (if (null? skip) text (%sql-lines-skipped text (sql-cast skip (lit bigint))))))
+            (said (%sql-option-text (%sql-csv-option options "sep")))
+            (nullstr (%sql-option-text (%sql-csv-option options "nullstr")))
+            (header (%sql-csv-option options "header"))
+            (plain (let ((v (%sql-csv-option options "all_varchar")))
+                     (and (not (null? v)) (%sql-option-true? v))))
+            (columns (%sql-option-types (%sql-csv-option options "columns")))
+            (types (%sql-option-types (%sql-csv-option options "types")))
+            (given (let ((v (%sql-csv-option options "names")))
+                     (if (null? v) () (first (rest v))))))
+        (unless (or (null? said) (= (Str8 length said) 1))
+          (error "Not implemented Error: a separator of more or less than one byte"))
+        (let ((rows (Csv parse-by (if (null? said) (%sql-separator body) said) body)))
+          (when (null? rows) (error "Invalid Input Error: the CSV file is empty"))
+          (let ((width (List length (first rows))))
+            (unless (List all? (fn (_ row) (= (List length row) width)) rows)
+              (error "Invalid Input Error: the rows of the CSV file are not all as wide as its first"))
+            (let ((headed (if (null? header)
+                            (and (%sql-header? (first rows)) (not (null? (rest rows))))
+                            (%sql-option-true? header))))
+              (let ((fields (%sql-as-columns
+                              (List map
+                                (fn (_ row) (List map (fn (_ f) (%sql-field f nullstr plain)) row))
+                                (if headed (rest rows) rows))
+                              width))
+                    (names (if (null? columns)
+                             (%sql-renamed (if headed (first rows) (%sql-numbered width)) given)
+                             (%sql-renamed (%sql-numbered width) (List map first columns)))))
+                (let ((typed (%sql-typed-columns fields (List repeat width rest)))
+                      (said-types (List append columns types)))
+                  (let ((final (List map
+                                 (fn (_ name t values column)
+                                   (let ((own (List find
+                                                (fn (_ row) (str=? (Str8 downcase (first row)) (Str8 downcase name)))
+                                                said-types)))
+                                     (if (null? own) (pair t values)
+                                       (pair (rest own) (%sql-column-as column (rest own))))))
+                                 names (first typed) (List second typed) fields)))
+                    (list names
+                          (List map first final)
+                          (%sql-as-rows (List map rest final)))))))))))
+    (method json (self text options)
+      (unless (null? options)
+        (error (Str8 append "Binder Error: Invalid named parameter \"" (first (first options))
+                            "\" for function read_json")))
       (let ((objects (%sql-json-objects text)))
         (let ((names (%sql-json-names objects)))
           (when (null? names) (error "Invalid Input Error: the JSON file holds no object with a key"))
@@ -457,12 +586,14 @@
         (error (Str8 str "Not implemented Error: the file format " format)))
       f)))
 
-; The table the file at PATH is, read as FORMAT, a name or nil
+; The table the file at PATH is, read as FORMAT, a name or nil, with
+; OPTIONS, each (NAME . VALUE)
 (def sql-file-read
-  (fn (_ path format)
+  (fn (_ path format options)
     (unless (File exists? path)
       (error (Str8 append "IO Error: No files found that match the pattern \"" path "\"")))
-    ((%sql-format SqlFormat (sql-file-format path format)) SqlFormat (File read-all path))))
+    ((%sql-format SqlFormat (sql-file-format path format)) SqlFormat (File read-all path)
+                                                           options)))
 
 ; A file's name without its directories and its ending: how its columns
 ; are qualified when it has no alias
@@ -496,18 +627,24 @@
         (#t (Json emit (sql-value-text v)))))))
 
 ; A result as a file's text.  HEADER says whether a CSV's first line names
-; its columns.
+; its columns, and OPTIONS its separator and the text a NULL is written
+; as, a comma and nothing when they do not.
 (def-class SqlWriter ()
   (static
-    (method csv (self result header)
-      (Csv emit
-        (List append
-          (if header (list (first result)) ())
-          (List map
-            (fn (_ row) (List map (fn (_ v) (if (sql-null? v) "" (sql-value-text v))) row))
-            (List third result)))))
+    (method csv (self result header options)
+      (let ((sep (%sql-option-text (%sql-csv-option options "sep")))
+            (nullstr (%sql-option-text (%sql-csv-option options "nullstr"))))
+        (Csv emit-by (if (null? sep) "," sep)
+          (List append
+            (if header (list (first result)) ())
+            (List map
+              (fn (_ row)
+                (List map
+                  (fn (_ v) (if (sql-null? v) (if (null? nullstr) "" nullstr) (sql-value-text v)))
+                  row))
+              (List third result))))))
     ; An object a line
-    (method json (self result header)
+    (method json (self result header options)
       (Str8 join ""
         (List map
           (fn (_ row)
@@ -518,11 +655,12 @@
               "}\n"))
           (List third result))))))
 
-; RESULT written to the file at PATH as FORMAT, a name or nil
+; RESULT written to the file at PATH as FORMAT, a name or nil, with
+; OPTIONS, each (NAME . VALUE)
 (def sql-file-write
-  (fn (_ result path format header)
+  (fn (_ result path format header options)
     (File write-all path
-      ((%sql-format SqlWriter (sql-file-format path format)) SqlWriter result header))
+      ((%sql-format SqlWriter (sql-file-format path format)) SqlWriter result header options))
     ()))
 
 (provide sql/files sql-file-read sql-file-write sql-file-stem sql-file-format)

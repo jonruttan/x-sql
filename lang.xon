@@ -9,7 +9,7 @@
 ; machine word is a HUGEINT, not a wrapped number.
 (dialect he)
 
-(requires-release "v0.58.0")
+(requires-release "v0.59.0")
 
 (entry "run.x")
 
