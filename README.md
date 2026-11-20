@@ -153,7 +153,9 @@ What is built:
   frame, so a long partition is slow.
 - **Results.** DuckDB's box, a column as wide as its widest text in
   terminal cells, headed by the alias, the column's name, or the
-  expression spelled out. On a terminal the box and the types are dim,
+  expression spelled out. A result of ten rows or more has its rows
+  counted under the box, and its columns when the box has room. On a
+  terminal the box and the types are dim,
   the names bold and a NULL dim.
 - **The prompt.** A statement ends at a semicolon and may span lines.
   A line is coloured as it is typed, by the grammar `sql/syntax.x`, in
