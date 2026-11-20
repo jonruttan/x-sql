@@ -112,7 +112,7 @@
 
 ; What is under a box of COUNT rows in columns of WIDTHS, SHOWN of them
 ; shown when it was cut and nil when it was not.  No rows: "0 rows".  Ten
-; or more, or cut: the rows counted, and the columns too, to the right,
+; or more: the rows counted, and the columns too, to the right,
 ; when there are several and the box has room for both; nothing when it
 ; has not room for the rows.  A cut result says how many rows are shown,
 ; beside the count where there is room and under it where not.
@@ -124,7 +124,7 @@
           (said (if (null? shown) () (Str8 str "(" shown " shown)"))))
       (match
         ((= count 0) (%sql-under across rows))
-        ((and (null? said) (< count %sql-counted-rows)) "")
+        ((< count %sql-counted-rows) "")
         ((and (not (null? (rest widths)))
               (>= across (+ (Str8 length rows) (Str8 length columns) 6)))
           (let ((room (- across 4 (Str8 length rows) (Str8 length columns))))
@@ -147,11 +147,9 @@
 ; --- a long result -----------------------------------------------------------
 
 ; How many rows a terminal is shown before a result is cut, DuckDB's
-; number; how many more a result may have and still be shown whole, the
-; lines the cut itself takes; and how many rows of dots stand for what is
-; left out
+; number, and how many rows of dots stand for what is left out.  A result
+; with no more rows over the most than the dots would take is shown whole.
 (def %sql-terminal-rows 40)
-(def %sql-cut-lines 4)
 (def %sql-dot-rows 3)
 
 ; The most rows shown, when .maxrows has said
@@ -177,7 +175,7 @@
 ; Answers (ROWS . CUT), CUT whether rows were left out.
 (def %sql-shown-rows
   (fn (_ rows rights most)
-    (if (or (null? most) (<= (List length rows) (+ most %sql-cut-lines))) (pair rows #f)
+    (if (or (null? most) (<= (List length rows) (+ most %sql-dot-rows))) (pair rows #f)
       (let ((top (List take (- most (Num quotient most 2)) rows))
             (bottom (List drop (- (List length rows) (Num quotient most 2)) rows)))
         (pair

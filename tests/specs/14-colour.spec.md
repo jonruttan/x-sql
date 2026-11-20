@@ -173,5 +173,5 @@ become.  `SqlLine` is the harness's stand-in for the editor's buffer.
 ---
 ```output
 (".s" ".schema")
-("." ".connect" ".disconnect" ".exit" ".help" ".quit" ".schema" ".tables")
+("." ".connect" ".disconnect" ".exit" ".help" ".maxrows" ".quit" ".schema" ".tables")
 ```

@@ -36,7 +36,35 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -cmd '.maxro
   (10 shown)              
 ```
 
-### four rows more than the most are still shown whole: the cut would take as many lines
+### three rows more than the most are still shown whole: the dots would take as many lines
+
+```x
+(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(13)) AS r, 'x' AS b"))
+```
+---
+```output
+┌───────┬─────────┐
+│   r   │    b    │
+│ int64 │ varchar │
+├───────┼─────────┤
+│     0 │ x       │
+│     1 │ x       │
+│     2 │ x       │
+│     3 │ x       │
+│     4 │ x       │
+│     5 │ x       │
+│     6 │ x       │
+│     7 │ x       │
+│     8 │ x       │
+│     9 │ x       │
+│    10 │ x       │
+│    11 │ x       │
+│    12 │ x       │
+└───────┴─────────┘
+      13 rows    
+```
+
+### and four are cut
 
 ```x
 (%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(14)) AS r, 'x' AS b"))
@@ -62,35 +90,6 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -cmd '.maxro
 │    13 │ x       │
 └───────┴─────────┘
       14 rows    
-    (10 shown)    
-```
-
-### and five are cut
-
-```x
-(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(15)) AS r, 'x' AS b"))
-```
----
-```output
-┌───────┬─────────┐
-│   r   │    b    │
-│ int64 │ varchar │
-├───────┼─────────┤
-│     0 │ x       │
-│     1 │ x       │
-│     2 │ x       │
-│     3 │ x       │
-│     4 │ x       │
-│     · │ ·       │
-│     · │ ·       │
-│     · │ ·       │
-│    10 │ x       │
-│    11 │ x       │
-│    12 │ x       │
-│    13 │ x       │
-│    14 │ x       │
-└───────┴─────────┘
-      15 rows    
     (10 shown)    
 ```
 
@@ -143,7 +142,7 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -cmd '.maxro
 ### a box with room says how many are shown beside the count
 
 ```x
-(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(1000)) AS r, 1 AS bbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(100)) AS r, 1 AS bbbbbbbbbbbbbbbbbbbbbbbbbbb"))
 ```
 ---
 ```output
@@ -159,47 +158,47 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -cmd '.maxro
 │     · │                           · │
 │     · │                           · │
 │     · │                           · │
-│   995 │                           1 │
-│   996 │                           1 │
-│   997 │                           1 │
-│   998 │                           1 │
-│   999 │                           1 │
+│    95 │                           1 │
+│    96 │                           1 │
+│    97 │                           1 │
+│    98 │                           1 │
+│    99 │                           1 │
 └───────┴─────────────────────────────┘
-  1000 rows (10 shown)      2 columns
+  100 rows (10 shown)       2 columns
 ```
 
 ### with exactly the room
 
 ```x
-(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(1000)) AS r, 1 AS bbbbbbbbbbbbbbbbbbbbb"))
+(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(100)) AS r, 1 AS bbbbbbbbbbbbbbbbbbbb"))
 ```
 ---
 ```output
-┌───────┬───────────────────────┐
-│   r   │ bbbbbbbbbbbbbbbbbbbbb │
-│ int64 │         int32         │
-├───────┼───────────────────────┤
-│     0 │                     1 │
-│     1 │                     1 │
-│     2 │                     1 │
-│     3 │                     1 │
-│     4 │                     1 │
-│     · │                     · │
-│     · │                     · │
-│     · │                     · │
-│   995 │                     1 │
-│   996 │                     1 │
-│   997 │                     1 │
-│   998 │                     1 │
-│   999 │                     1 │
-└───────┴───────────────────────┘
-  1000 rows (10 shown)2 columns
+┌───────┬──────────────────────┐
+│   r   │ bbbbbbbbbbbbbbbbbbbb │
+│ int64 │        int32         │
+├───────┼──────────────────────┤
+│     0 │                    1 │
+│     1 │                    1 │
+│     2 │                    1 │
+│     3 │                    1 │
+│     4 │                    1 │
+│     · │                    · │
+│     · │                    · │
+│     · │                    · │
+│    95 │                    1 │
+│    96 │                    1 │
+│    97 │                    1 │
+│    98 │                    1 │
+│    99 │                    1 │
+└───────┴──────────────────────┘
+  100 rows (10 shown)2 columns
 ```
 
 ### one column, wide
 
 ```x
-(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(1000)) AS rrrrrrrrrrrrrrrrrrrrrrrrrrr"))
+(%seq (sql-eval-line ".maxrows 10") (sql "SELECT unnest(range(100)) AS rrrrrrrrrrrrrrrrrrrrrrrrrrr"))
 ```
 ---
 ```output
@@ -215,13 +214,13 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -cmd '.maxro
 │                           · │
 │                           · │
 │                           · │
-│                         995 │
-│                         996 │
-│                         997 │
-│                         998 │
-│                         999 │
+│                          95 │
+│                          96 │
+│                          97 │
+│                          98 │
+│                          99 │
 └─────────────────────────────┘
-     1000 rows (10 shown)    
+      100 rows (10 shown)    
 ```
 
 ### one column too narrow to say it is made wide enough
@@ -270,7 +269,7 @@ Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -cmd '.maxro
   (1 shown) 
 ```
 
-### fewer than ten rows are counted too when they are cut
+### fewer than ten rows have nothing under them, cut or not
 
 ```x
 (%seq (sql-eval-line ".maxrows 2") (sql "SELECT unnest(range(8)) AS r, 1 AS b, 2 AS c"))
