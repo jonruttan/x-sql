@@ -2195,14 +2195,54 @@
 (def %sql-plain
   (fn (_ scope) (list (first scope) (List second scope) () (%sql-fourth scope))))
 
+; --- sweeping ----------------------------------------------------------------
+;
+; The platform sweeps what a computation left behind when it is asked to.
+; A statement over many rows is one asking, and would hold every row's
+; leavings until its end; so the loops that go over a statement's rows
+; ask as they go.
+
+; How many rows are answered between sweeps
+(def %sql-sweep-every 200)
+
+; ITEMS as F answers each
+(def sql-swept-map
+  (fn (_ f items)
+    (let ((go (fn (self left done n)
+                (if (null? left) (List reverse done)
+                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
+                      (self (rest left) (pair (f (first left)) done) (+ n 1)))))))
+      (go items () 1))))
+
+; The ITEMS that KEEP? is true of
+(def sql-swept-filter
+  (fn (_ keep? items)
+    (let ((go (fn (self left kept n)
+                (if (null? left) (List reverse kept)
+                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
+                      (self (rest left)
+                            (if (keep? (first left)) (pair (first left) kept) kept)
+                            (+ n 1)))))))
+      (go items () 1))))
+
+; F called for each of ITEMS, for what it does
+(def sql-swept-each
+  (fn (_ f items)
+    (let ((go (fn (self left n)
+                (if (null? left) ()
+                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
+                      (f (first left))
+                      (self (rest left) (+ n 1)))))))
+      (go items 1))))
+
 ; The values ARG has over a group's rows, the NULLs left out, and each
 ; value once when DISTINCT
 (def %sql-values
   (fn (_ node scope)
     (let ((arg (first (List third node))))
       (let ((values (List filter (fn (_ v) (not (%sql-null? v)))
-                      (List map (fn (_ member) (sql-eval arg member))
-                                (first (List third scope))))))
+                      (sql-swept-map (fn (_ member) (sql-eval arg member))
+                                     (first (List third scope))))))
         (if (List ref 3 node) (%sql-once values ()) values)))))
 
 ; VALUES, each once, in the order they first come.  SEEN holds the ones
@@ -3336,4 +3376,5 @@
   sql-aggregated? sql-aggregate-call? sql-common-type sql-cast
   sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
-  sql-type-name sql-numeric-type? sql-pointed? sql-function-names)
+  sql-type-name sql-numeric-type? sql-pointed? sql-function-names
+  sql-swept-map sql-swept-filter sql-swept-each)

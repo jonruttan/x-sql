@@ -36,7 +36,8 @@
   sql-common-type
   sql-aggregated? sql-aggregate-call? sql-cast
   sql-windowed? sql-scope-windowed sql-window-aggregate sql-type-name sql-pointed?
-  sql-truth sql-order sql-null? sql-value-text)
+  sql-truth sql-order sql-null? sql-value-text
+  sql-swept-map sql-swept-filter sql-swept-each)
 
 ; --- the tables --------------------------------------------------------------
 
@@ -126,7 +127,7 @@
 ; join, and a right row with none after them all in a right or full one.
 (def %sql-join-rows
   (fn (_ left right kind keeps?)
-    (let ((joined (List map
+    (let ((joined (sql-swept-map
                     (fn (_ l)
                       (List filter keeps?
                         (List map (fn (_ r) (List append l r)) (rest right))))
@@ -732,7 +733,7 @@
       (List map rest
         (List sort
           (fn (_ a b) (< (%sql-keys-order (first a) (first b) terms) 0))
-          (List map
+          (sql-swept-map
             (fn (_ s) (pair (List map (fn (_ e) (sql-eval e s)) exprs) s))
             scopes))))))
 
@@ -754,15 +755,17 @@
 ; their keys first come and each in the order its things came
 (def %sql-partition
   (fn (_ things key-of)
-    (let ((held (Dict make)))
-      (let ((keys (List fold
-                    (fn (_ keys thing)
-                      (let ((k (key-of thing)))
-                        (if (held has? k)
-                          (do (held set! k (pair thing (held get k))) keys)
-                          (do (held set! k (list thing)) (pair k keys)))))
-                    () things)))
-        (List map (fn (_ k) (List reverse (held get k))) (List reverse keys))))))
+    (let ((held (Dict make)) (order (Dict make)))
+      (sql-swept-each
+        (fn (_ thing)
+          (let ((k (key-of thing)))
+            (if (held has? k)
+              (held set! k (pair thing (held get k)))
+              (do (held set! k (list thing))
+                  (order set! (lit keys) (pair k (order get (lit keys))))))))
+        things)
+      (List map (fn (_ k) (List reverse (held get k)))
+                (List reverse (order get (lit keys)))))))
 
 ; Whether a SELECT answers a row a group: it has a GROUP BY, a HAVING, or
 ; an aggregate among its items or its ORDER BY
@@ -1281,31 +1284,6 @@
 
 ; --- the statements ----------------------------------------------------------
 
-; How many rows are answered between sweeps of what answering them left
-; behind.  The platform sweeps when it is asked to; a statement over many
-; rows is one asking, and would hold every row's leavings until its end.
-(def %sql-sweep-every 200)
-
-; ITEMS as F answers each, swept as they go
-(def %sql-swept-map
-  (fn (_ f items)
-    (let ((go (fn (self left done n)
-                (if (null? left) (List reverse done)
-                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
-                      (self (rest left) (pair (f (first left)) done) (+ n 1)))))))
-      (go items () 1))))
-
-; The ITEMS that KEEP? is true of, swept as they go
-(def %sql-swept-filter
-  (fn (_ keep? items)
-    (let ((go (fn (self left kept n)
-                (if (null? left) (List reverse kept)
-                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
-                      (self (rest left)
-                            (if (keep? (first left)) (pair (first left) kept) kept)
-                            (+ n 1)))))))
-      (go items () 1))))
-
 ; The scopes a SELECT's FROM and WHERE leave: a row of the tables each, or
 ; one with nothing in it when there is no FROM.  OUTER is the scope of the
 ; row a subquery is answered for.
@@ -1323,7 +1301,7 @@
                       ((null? outer) (list ()))
                       (#t (list (sql-scope () () () outer))))))
         (if (null? where) scopes
-          (%sql-swept-filter (fn (_ s) (eq? (sql-truth (sql-eval where s)) #t))
+          (sql-swept-filter (fn (_ s) (eq? (sql-truth (sql-eval where s)) #t))
                              scopes))))))
 
 ; SCOPES as the groups a grouped SELECT answers for, HAVING applied.  ITEMS
@@ -1340,8 +1318,8 @@
       (unless (null? having) (%sql-check-grouped having keys columns))
       (let ((groups (%sql-groups scopes keys columns outer)))
         (if (null? having) groups
-          (List filter (fn (_ g) (eq? (sql-truth (sql-eval having g)) #t))
-                       groups))))))
+          (sql-swept-filter (fn (_ g) (eq? (sql-truth (sql-eval having g)) #t))
+                            groups))))))
 
 ; The types of ITEMS' columns when no row shows them: each item's type over
 ; a row of NULLs, a group with no rows when GROUPED, and that row the one
@@ -1393,7 +1371,7 @@
                             unnests outer)))
               (let ((rows (%sql-page
                             (%sql-distinct
-                              (%sql-swept-map
+                              (sql-swept-map
                                 (fn (_ s) (List map (fn (_ i) (sql-eval (first i) s)) items))
                                 (%sql-sorted scopes (List ref 4 stmt) order))
                               (List ref 9 stmt))
