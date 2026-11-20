@@ -78,6 +78,19 @@
 ; What DuckDB calls a select statement in a FROM that has no alias
 (def %sql-unnamed "unnamed_subquery")
 
+; The options a file node or a COPY holds, HELD their list in a list or
+; nothing, each as (NAME . VALUE): the value is a constant's
+(def %sql-file-options
+  (fn (_ held)
+    (if (null? held) ()
+      (List map
+        (fn (_ o)
+          (pair (first o)
+                (guard (_ (error (Str8 append "Binder Error: the option " (first o)
+                                              " takes a constant")))
+                  (sql-eval (List second o) ()))))
+        (first held)))))
+
 ; One table of a FROM: a file, a select statement in parentheses, a table a
 ; WITH named, or a table there is.  A file's qualifier is its name without
 ; its directories and its ending.  The qualifier is its alias when it has one
@@ -88,7 +101,8 @@
       ((and (pair? name) (eq? (first name) (lit renamed)))
         (%sql-source-renamed (%sql-source (List second name) alias) (List third name)))
       ((and (pair? name) (eq? (first name) (lit file)))
-        (%sql-result-source (sql-file-read (List second name) (List third name))
+        (%sql-result-source (sql-file-read (List second name) (List third name)
+                                           (%sql-file-options (List drop 3 name)))
                             (if (null? alias) (sql-file-stem (List second name)) alias)))
       ((pair? name)
         (%sql-result-source (%sql-query-result name ()) (if (null? alias) %sql-unnamed alias)))
@@ -1590,11 +1604,13 @@
               (list (lit select) (list (list (list (lit star) ()) ())) (list (list source ()))
                     () () () () () () #f ())
               ()))
-          (List third stmt) (List ref 3 stmt) (List ref 4 stmt))))
+          (List third stmt) (List ref 3 stmt) (List ref 4 stmt)
+          (%sql-file-options (List drop 5 stmt)))))
     ; A file's rows added to a table, each value cast to its column
     (method copy-from (self stmt)
       (let ((table (%sql-table (List second stmt)))
-            (result (sql-file-read (List third stmt) (List ref 3 stmt))))
+            (result (sql-file-read (List third stmt) (List ref 3 stmt)
+                                   (%sql-file-options (List drop 4 stmt)))))
         (let ((places (%sql-places table ())))
           (%sql-store! table
             (List append (List third table)
