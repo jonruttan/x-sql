@@ -1277,6 +1277,31 @@
 
 ; --- the statements ----------------------------------------------------------
 
+; How many rows are answered between sweeps of what answering them left
+; behind.  The platform sweeps when it is asked to; a statement over many
+; rows is one asking, and would hold every row's leavings until its end.
+(def %sql-sweep-every 200)
+
+; ITEMS as F answers each, swept as they go
+(def %sql-swept-map
+  (fn (_ f items)
+    (let ((go (fn (self left done n)
+                (if (null? left) (List reverse done)
+                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
+                      (self (rest left) (pair (f (first left)) done) (+ n 1)))))))
+      (go items () 1))))
+
+; The ITEMS that KEEP? is true of, swept as they go
+(def %sql-swept-filter
+  (fn (_ keep? items)
+    (let ((go (fn (self left kept n)
+                (if (null? left) (List reverse kept)
+                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
+                      (self (rest left)
+                            (if (keep? (first left)) (pair (first left) kept) kept)
+                            (+ n 1)))))))
+      (go items () 1))))
+
 ; The scopes a SELECT's FROM and WHERE leave: a row of the tables each, or
 ; one with nothing in it when there is no FROM.  OUTER is the scope of the
 ; row a subquery is answered for.
@@ -1294,8 +1319,8 @@
                       ((null? outer) (list ()))
                       (#t (list (sql-scope () () () outer))))))
         (if (null? where) scopes
-          (List filter (fn (_ s) (eq? (sql-truth (sql-eval where s)) #t))
-                       scopes))))))
+          (%sql-swept-filter (fn (_ s) (eq? (sql-truth (sql-eval where s)) #t))
+                             scopes))))))
 
 ; SCOPES as the groups a grouped SELECT answers for, HAVING applied.  ITEMS
 ; and ORDER, what the terms of ORDER BY sort by, are checked against the
@@ -1364,7 +1389,7 @@
                             unnests outer)))
               (let ((rows (%sql-page
                             (%sql-distinct
-                              (List map
+                              (%sql-swept-map
                                 (fn (_ s) (List map (fn (_ i) (sql-eval (first i) s)) items))
                                 (%sql-sorted scopes (List ref 4 stmt) order))
                               (List ref 9 stmt))

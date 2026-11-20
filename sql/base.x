@@ -194,7 +194,9 @@
             (Str8 append (List ref 4 at) "@" (List third at))))
         (sql-connection)))))
 
-; Every statement of TEXT run in order: their results, as one text.  A
+; Every statement of TEXT run in order: their results, as one text.  What
+; a statement left behind is swept when it is done: the platform sweeps
+; when it is asked to.  A
 ; statement of the engine's with nothing to show adds nothing.  With a
 ; server, TEXT goes to it whole.
 (def sql-run
@@ -205,7 +207,9 @@
         (List map
           (fn (_ s)
             (let ((result (sql-execute s)))
-              (if (null? result) "" (sql-render result))))
+              (let ((shown (if (null? result) "" (sql-render result))))
+                (Heap collect)
+                shown)))
           (sql-parse text))))))
 
 ; An error as it is shown: the kind it opens with, up to "Error:", bold red
