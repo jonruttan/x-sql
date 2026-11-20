@@ -81,3 +81,4 @@
         (let ((left (held get (lit lines))))
           (if (null? left) ()
             (do (held set! (lit lines) (rest left)) (first left))))))))
+(import sql/render sql-value-class)

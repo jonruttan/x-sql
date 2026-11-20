@@ -14,7 +14,8 @@
 ; the box is wide enough.
 ;
 ; On a terminal that takes colour the box and the types are dim, the names
-; bold and a NULL dim.  A cell is padded before it is coloured, so the
+; bold, a NULL dim, and a value the colour the theme in use gives its kind
+; where a statement is written: a number, a text, a truth.  A cell is padded before it is coloured, so the
 ; codes take no room, and with colour off the text is DuckDB's byte for
 ; byte.
 
@@ -23,6 +24,7 @@
 (import x/type/str)
 (import x/tui/width)
 (import x/repl/ansi)
+(import x/tool/syntax)
 (import sql/eval sql-value-text sql-type-heading sql-numeric-type? sql-null?)
 
 (def %sql-spaces (fn (_ n) (Str8 repeat n " ")))
@@ -124,12 +126,32 @@
       (list 6)
       widths)))
 
+; The class of the theme a value of the type T is coloured as: a number,
+; a truth as the constant it is written as, a list or a struct as nothing,
+; and anything else, which a statement writes in quotes, as a string
+(def sql-value-class
+  (fn (_ t)
+    (match
+      ((sql-numeric-type? t) (lit number))
+      ((eq? t (lit boolean)) (lit constant))
+      ((or (pair? t) (eq? t (lit null))) ())
+      (#t (lit string)))))
+
+; Each column's colour code, nil for none; all nil with colour off
+(def %sql-codes
+  (fn (_ classes)
+    (List map
+      (fn (_ class) (if (and (Ansi enabled?) (not (null? class))) (Syntax code class) ()))
+      classes)))
+
 ; A table: NAMES and HEADINGS a text a column, RIGHTS whether each
 ; column's cells go to the right, ROWS lists of (TEXT . NULL) cells, each
-; text on one line
+; text on one line, and CLASSES each column's class of the theme, nil for
+; a column with no colour
 (def sql-render-table
-  (fn (_ names headings rights rows)
-    (let ((widths (%sql-fitted (%sql-widths names headings rows) rows)))
+  (fn (_ names headings rights rows classes)
+    (let ((widths (%sql-fitted (%sql-widths names headings rows) rows))
+          (codes (%sql-codes classes)))
       (Str8 append
         (%sql-rule "┌" "┬" "┐" widths)
         (%sql-line (List map (fn (_ w name) (%sql-bold (%sql-centre w name))) widths names))
@@ -140,10 +162,13 @@
             (fn (_ row)
               (%sql-line
                 (List map
-                  (fn (_ w right cell)
+                  (fn (_ w right code cell)
                     (let ((text ((if right %sql-right %sql-left) w (first cell))))
-                      (if (rest cell) (%sql-dim text) text)))
-                  widths rights row)))
+                      (match
+                        ((rest cell) (%sql-dim text))
+                        ((null? code) text)
+                        (#t (Ansi wrap code text)))))
+                  widths rights codes row)))
             rows))
         (%sql-rule "└" "┴" "┘" widths)
         (%sql-footer widths (List length rows))))))
@@ -171,6 +196,7 @@
                       (sql-value-text v))
                     (sql-null? v)))
             row))
-        (List third result)))))
+        (List third result))
+      (List map sql-value-class (List second result)))))
 
-(provide sql/render sql-render sql-render-table sql-one-line-rows)
+(provide sql/render sql-render sql-render-table sql-one-line-rows sql-value-class)

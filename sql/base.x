@@ -118,7 +118,8 @@
 ; A server's results as text.  A result is a string, a notice as it came;
 ; or (NAMES TYPES RIGHTS ROWS TAG): a table for a statement that answers
 ; rows, headed by the server's names for its types, and TAG, the server's
-; word, for one that does not.
+; word, for one that does not.  A column whose values go to the right is
+; coloured as numbers are and any other as text is.
 (def sql-remote-text
   (fn (_ results)
     (Str8 join ""
@@ -129,7 +130,9 @@
             ((null? (first result)) (Str8 append (List ref 4 result) "\n"))
             (#t (sql-render-table (first result) (List second result)
                                   (List third result)
-                                  (sql-one-line-rows (List ref 3 result))))))
+                                  (sql-one-line-rows (List ref 3 result))
+                                  (List map (fn (_ right) (if right (lit number) (lit string)))
+                                            (List third result))))))
         results))))
 
 ; PostgreSQL's results, which name a type by its OID, as sql-remote-text
