@@ -9,7 +9,9 @@
 ; DuckDB's box: a heading of names and types, centred, then the rows, a
 ; number to the right of its column and anything else to the left.  A
 ; column is as wide as the widest thing in it, counted in terminal cells.
-; A result with no rows is the heading, closed, and "0 rows" under it.
+; A result with no rows is the heading, closed, and "0 rows" under it; one
+; of ten rows or more has its rows counted there, and its columns when
+; the box is wide enough.
 ;
 ; On a terminal that takes colour the box and the types are dim, the names
 ; bold and a NULL dim.  A cell is padded before it is coloured, so the
@@ -84,14 +86,36 @@
                 names headings)
       rows)))
 
-; The line under a result with no rows: "0 rows", as far in as centres it
-; under the box, the line two cells short of the box's width
-(def %sql-no-rows
-  (fn (_ widths)
-    (let ((across (+ (List sum widths) (* 3 (List length widths)) 1)))
-      (let ((left (Num quotient (- across 6) 2)))
-        (Str8 append (%sql-spaces left) "0 rows"
-                     (%sql-spaces (- across 8 left)) "\n")))))
+; How many rows a result has before DuckDB counts them under its box
+(def %sql-counted-rows 10)
+
+; The line under a box ACROSS cells wide: TEXT as far in as centres it,
+; the line two cells short of the box
+(def %sql-under
+  (fn (_ across text)
+    (let ((n (Str8 length text)))
+      (let ((left (Num quotient (- across n) 2)))
+        (Str8 append (%sql-spaces left) text (%sql-spaces (- across 2 n left)) "\n")))))
+
+; What is under a box of COUNT rows in columns of WIDTHS.  No rows: "0
+; rows".  Ten or more: the rows counted, and the columns too, to the
+; right, when there are several and the box has room for both; nothing
+; when it has not room for the rows.  Fewer: nothing.
+(def %sql-footer
+  (fn (_ widths count)
+    (let ((across (+ (List sum widths) (* 3 (List length widths)) 1))
+          (rows (Str8 str count " rows"))
+          (columns (Str8 str (List length widths) " columns")))
+      (match
+        ((= count 0) (%sql-under across rows))
+        ((< count %sql-counted-rows) "")
+        ((and (not (null? (rest widths)))
+              (>= across (+ (Str8 length rows) (Str8 length columns) 6)))
+          (Str8 append "  " rows
+                       (%sql-spaces (- across 4 (Str8 length rows) (Str8 length columns)))
+                       columns "\n"))
+        ((>= across (+ (Str8 length rows) 4)) (%sql-under across rows))
+        (#t "")))))
 
 ; WIDTHS, a lone column made wide enough for "0 rows" when no row is shown
 (def %sql-fitted
@@ -122,7 +146,7 @@
                   widths rights row)))
             rows))
         (%sql-rule "└" "┴" "┘" widths)
-        (if (null? rows) (%sql-no-rows widths) "")))))
+        (%sql-footer widths (List length rows))))))
 
 ; ROWS with each cell's text on one line
 (def sql-one-line-rows
