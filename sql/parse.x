@@ -319,6 +319,17 @@
       (if (%sql-op? (rest e) ")") (pair (first e) (rest (rest e)))
         (%sql-near (rest e))))))
 
+; TS after an opening parenthesis that opens a value: an expression in
+; parentheses, or several with commas between, which is the call row of
+; them
+(def %sql-closed-exprs
+  (fn (_ ts)
+    (let ((es (%sql-list %sql-expr ts)))
+      (match
+        ((not (%sql-op? (rest es) ")")) (%sql-near (rest es)))
+        ((null? (rest (first es))) (pair (first (first es)) (rest (rest es))))
+        (#t (pair (list (lit call) "row" (first es) #f) (rest (rest es))))))))
+
 ; A type before a string, DATE '2026-11-17': a cast of the string
 (def %sql-typed-string
   (fn (_ ts)
@@ -610,13 +621,14 @@
             ((not (null? form)) form)
             ((and (%sql-op? ts "(") (%sql-query? (rest ts)))
               (%sql-subquery (lit subquery) (rest ts)))
-            ((%sql-op? ts "(") (%sql-closed-expr (rest ts)))
+            ((%sql-op? ts "(") (%sql-closed-exprs (rest ts)))
             ((%sql-op? ts "[") (%sql-list-literal (rest ts)))
             ((%sql-op? ts "{") (%sql-struct-node %sql-struct-entry (rest ts) "}"))
             ((and (%sql-word? ts "STRUCT_PACK") (%sql-op? (rest ts) "(")
                   (not (%sql-op? (List drop 2 ts) ")")))
               (%sql-struct-node %sql-struct-named (List drop 2 ts) ")"))
-            ((and (or (eq? (first (first ts)) (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT"))
+            ((and (or (eq? (first (first ts)) (lit id)) (%sql-kw? ts "LEFT") (%sql-kw? ts "RIGHT")
+                      (%sql-kw? ts "ROW"))
                   (%sql-op? (rest ts) "("))
               (%sql-windowed
                 (%sql-unnest-call (%sql-call (List second (first ts)) (rest (rest ts))))))
