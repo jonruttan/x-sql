@@ -29,6 +29,7 @@
 (import sql/words sql-lower sql-same-name?)
 (import sql/zone sql-zone-session!)
 (import sql/files sql-file-read sql-file-write sql-file-stem)
+(import sql/sqlite sql-sqlite-read)
 (import sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
@@ -100,6 +101,9 @@
     (match
       ((and (pair? name) (eq? (first name) (lit renamed)))
         (%sql-source-renamed (%sql-source (List second name) alias) (List third name)))
+      ((and (pair? name) (eq? (first name) (lit sqlite)))
+        (%sql-result-source (sql-sqlite-read (List second name) (List third name))
+                            (if (null? alias) "sqlite_scan" alias)))
       ((and (pair? name) (eq? (first name) (lit file)))
         (%sql-result-source (sql-file-read (List second name) (List third name)
                                            (%sql-file-options (List drop 3 name)))

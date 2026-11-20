@@ -16,7 +16,7 @@ the evaluator has to one.
 ### and so have the functions that are read where a table is
 
 ```x
-(write (List reject sql-help-function (list "read_csv" "read_csv_auto" "read_json" "read_json_auto" "read_ndjson" "unnest")))
+(write (List reject sql-help-function (list "read_csv" "read_csv_auto" "read_json" "read_json_auto" "read_ndjson" "sqlite_scan" "unnest")))
 ```
 ---
     ()
