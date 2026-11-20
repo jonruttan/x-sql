@@ -209,6 +209,81 @@ Expected output is DuckDB 2.0.0's own with its sqlite extension, taken from `duc
 └───────┴───────┴───────┘
 ```
 
+## sqlite without rowid
+
+### a table made WITHOUT ROWID keeps its rows in an index, in the order of its key
+
+```x
+(sql-files "FROM sqlite_scan('{F}shop.sqlite3', 'products')")
+```
+---
+```output
+┌─────────┬─────────┬────────┬───────┐
+│   sku   │  title  │ price  │ stock │
+│ varchar │ varchar │ double │ int64 │
+├─────────┼─────────┼────────┼───────┤
+│ A-1     │ Anvil   │   49.5 │     3 │
+│ B-2     │ Bellows │   12.0 │     0 │
+│ C-3     │ Chisel  │   7.25 │    40 │
+└─────────┴─────────┴────────┴───────┘
+```
+
+### a key of two columns that are not the table's first: the columns come back in the table's order
+
+```x
+(sql-files "SELECT * FROM sqlite_scan('{F}shop.sqlite3', 'shelves') WHERE place <= 4 ORDER BY place")
+```
+---
+```output
+┌─────────────────────────────────────────┬───────┬─────────┬───────┐
+│                  note                   │ place │   sku   │ held  │
+│                 varchar                 │ int64 │ varchar │ int64 │
+├─────────────────────────────────────────┼───────┼─────────┼───────┤
+│ shelf 1 of the back room, counted twice │     1 │ B-2     │     2 │
+│ shelf 2 of the back room, counted twice │     2 │ C-3     │     4 │
+│ shelf 3 of the back room, counted twice │     3 │ A-1     │     6 │
+│ shelf 4 of the back room, counted twice │     4 │ B-2     │     8 │
+└─────────────────────────────────────────┴───────┴─────────┴───────┘
+```
+
+### its rows are in the key's order, through the pages of the index
+
+DuckDB reads the rows in this order too; the case has no ORDER BY so that it shows the file's.
+
+```x
+(sql-files "SELECT sku, place, held FROM sqlite_scan('{F}shop.sqlite3', 'shelves') LIMIT 5")
+```
+---
+```output
+┌─────────┬───────┬───────┐
+│   sku   │ place │ held  │
+│ varchar │ int64 │ int64 │
+├─────────┼───────┼───────┤
+│ A-1     │     3 │     6 │
+│ A-1     │     6 │    12 │
+│ A-1     │     9 │    18 │
+│ A-1     │    12 │    24 │
+│ A-1     │    15 │    30 │
+└─────────┴───────┴───────┘
+```
+
+### every row of it
+
+```x
+(sql-files "SELECT sku, count(*) AS n, sum(held) AS total, min(place) AS low, max(place) AS high FROM sqlite_scan('{F}shop.sqlite3', 'shelves') GROUP BY sku ORDER BY sku")
+```
+---
+```output
+┌─────────┬───────┬────────┬───────┬───────┐
+│   sku   │   n   │ total  │  low  │ high  │
+│ varchar │ int64 │ int128 │ int64 │ int64 │
+├─────────┼───────┼────────┼───────┼───────┤
+│ A-1     │    40 │   4920 │     3 │   120 │
+│ B-2     │    40 │   4760 │     1 │   118 │
+│ C-3     │    40 │   4840 │     2 │   119 │
+└─────────┴───────┴────────┴───────┴───────┘
+```
+
 ## sqlite errors
 
 ### a file that is not there
@@ -255,18 +330,6 @@ DuckDB runs the view with SQLite's own engine.
 ---
 ```output
 Not implemented Error: a view of a SQLite file
-```
-
-### a table made WITHOUT ROWID is not read yet
-
-DuckDB reads it.
-
-```x
-(sql-files "FROM sqlite_scan('{F}shop.sqlite3', 'products')")
-```
----
-```output
-Not implemented Error: a SQLite table made WITHOUT ROWID
 ```
 
 ### columns with no declared type are DuckDB's BLOB, which is not built

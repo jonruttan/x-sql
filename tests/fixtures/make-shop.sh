@@ -17,6 +17,8 @@
 #   customers     declared types of every affinity, NULLs, an empty text,
 #                 text of more than one byte a letter, a UNIQUE column
 #   products      WITHOUT ROWID: its rows are in an index b-tree
+#   shelves       WITHOUT ROWID with a key of two columns that are not its
+#                 first, and rows enough for an interior page of the index
 #   orders        a foreign key, an index on it, timestamps, deleted rows
 #   order_lines   a primary key of two columns
 #   measurements  four hundred rows: an interior page above the leaves
@@ -58,6 +60,19 @@ INSERT INTO products VALUES
   ('A-1', 'Anvil', 49.5, 3),
   ('B-2', 'Bellows', 12.0, 0),
   ('C-3', 'Chisel', 7.25, 40);
+
+CREATE TABLE shelves (
+  note TEXT,
+  place INT,
+  sku TEXT,
+  held INT,
+  PRIMARY KEY (sku, place)
+) WITHOUT ROWID;
+WITH RECURSIVE count(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM count WHERE i < 120)
+INSERT INTO shelves
+  SELECT 'shelf ' || i || ' of the back room, counted twice',
+         i, CASE i % 3 WHEN 0 THEN 'A-1' WHEN 1 THEN 'B-2' ELSE 'C-3' END, i * 2
+  FROM count;
 
 CREATE TABLE orders (
   id INTEGER PRIMARY KEY,
