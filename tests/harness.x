@@ -82,3 +82,5 @@
           (if (null? left) ()
             (do (held set! (lit lines) (rest left)) (first left))))))))
 (import sql/render sql-value-class)
+(import sql/eval sql-function-names)
+(import sql/help sql-help-function)

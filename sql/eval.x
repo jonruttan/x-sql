@@ -3316,6 +3316,16 @@
                          (%sql-type-name (first v)) " -> " (%sql-type-name t) ")")))
       (#t ((class-static-ref SqlCast (if (pair? t) (first t) t)) SqlCast v t)))))
 
+; The name of every function there is to call: those of a row's values,
+; those that take a lambda, those of a group, and those of a window
+(def sql-function-names
+  (fn (_)
+    (List append
+      (List map (fn (_ name) (Str8 str name))
+        (List append (class-static-methods SqlFunction) (class-static-methods SqlLambda)
+                     (class-static-methods SqlAggregate)))
+      sql-window-functions)))
+
 (def sql-truth %sql-truth)
 (def sql-order %sql-order)
 (def sql-null? %sql-null?)
@@ -3326,4 +3336,4 @@
   sql-aggregated? sql-aggregate-call? sql-common-type sql-cast
   sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
-  sql-type-name sql-numeric-type? sql-pointed?)
+  sql-type-name sql-numeric-type? sql-pointed? sql-function-names)
