@@ -159,8 +159,9 @@ What is built:
   terminal cells, headed by the alias, the column's name, or the
   expression spelled out. A result of ten rows or more has its rows
   counted under the box, and its columns when the box has room. On a
-  terminal the box and the types are dim,
-  the names bold and a NULL dim.
+  terminal the box and the types are dim, the names bold, a NULL dim,
+  and a value the colour the theme gives its kind in a statement: a
+  number, a text, a truth.
 - **The prompt.** A statement ends at a semicolon and may span lines.
   A line is coloured as it is typed, by the grammar `sql/syntax.x`, in
   the colours of x-lang's theme; brackets take their depth's colour and
