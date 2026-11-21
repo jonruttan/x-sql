@@ -37,7 +37,7 @@
   sql-aggregated? sql-aggregate-call? sql-cast
   sql-windowed? sql-scope-windowed sql-window-aggregate sql-type-name sql-pointed?
   sql-truth sql-order sql-null? sql-value-text
-  sql-swept-map sql-swept-filter sql-swept-each)
+  sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each)
 
 ; --- the tables --------------------------------------------------------------
 
@@ -127,7 +127,7 @@
 ; join, and a right row with none after them all in a right or full one.
 (def %sql-join-rows
   (fn (_ left right kind keeps?)
-    (let ((joined (sql-swept-map
+    (let ((joined (sql-swept-map-over (List length (rest right))
                     (fn (_ l)
                       (List filter keeps?
                         (List map (fn (_ r) (List append l r)) (rest right))))
