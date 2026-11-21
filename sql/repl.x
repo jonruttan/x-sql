@@ -31,7 +31,8 @@
 (import sql/base
   sql-run sql-error-text sql-connect! sql-disconnect! sql-connection
   sql-connection-secure?)
-(import sql/exec sql-table-names sql-table-columns)
+(import sql/exec sql-table-names sql-table-columns sql-attached)
+(import sql/sqlite sql-sqlite-tables sql-sqlite-columns)
 (import sql/eval sql-type-name)
 (import sql/render sql-max-rows!)
 (import sql/number sql-decimal-read)
@@ -259,6 +260,37 @@
                ");"))
     (newline)))
 
+; The tables of the databases attached, each database.table, the
+; databases in the order of their names and each one's tables in theirs
+(def %sql-attached-tables
+  (fn (_)
+    (List flat-map
+      (fn (_ db)
+        (List map (fn (_ table) (Str8 append (first db) "." table))
+          (List sort (fn (_ a b) (Str8 <? a b)) (sql-sqlite-tables (List second db)))))
+      (sql-attached))))
+
+; A table of an attached database, NAME written database.table, as the
+; statement that would make it; nil when NAME names no attached database.
+; A view has no columns to show.
+(def %sql-attached-schema
+  (fn (_ name)
+    (let ((at (Str8 index-of "." name)))
+      (let ((db (if (null? at) ()
+                  (List find
+                    (fn (_ d) (str=? (sql-lower (first d)) (sql-lower (Str8 sub 0 at name))))
+                    (sql-attached)))))
+        (if (null? db) ()
+          (let ((table (Str8 sub (+ at 1) (Str8 length name) name)))
+            (Str8 append "CREATE TABLE " (first db) "." table "("
+              (Str8 join ", "
+                (List map
+                  (fn (_ c)
+                    (Str8 append (first c) " "
+                      (if (eq? (List second c) (lit blob)) "BLOB" (sql-type-name (List second c)))))
+                  (sql-sqlite-columns (List second db) table)))
+              ");")))))))
+
 ; The prompt says where statements go: sql> here, and a server's database
 ; and host when there is one
 (def %sql-prompt!
@@ -292,11 +324,17 @@
           (do (display "usage: .maxrows N, the most rows of a result that are shown")
               (newline)))))
     (method tables (self rest-of-line)
-      (List for-each (fn (_ name) (display name) (newline)) (sql-table-names)))
+      (List for-each (fn (_ name) (display name) (newline))
+        (List append (sql-table-names) (%sql-attached-tables))))
     (method schema (self rest-of-line)
       (if (= (Str8 length rest-of-line) 0)
-        (List for-each %sql-schema (sql-table-names))
-        (%sql-schema rest-of-line)))
+        (do (List for-each %sql-schema (sql-table-names))
+            (List for-each
+              (fn (_ name) (display (%sql-attached-schema name)) (newline))
+              (%sql-attached-tables)))
+        (let ((attached (%sql-attached-schema rest-of-line)))
+          (if (null? attached) (%sql-schema rest-of-line)
+            (do (display attached) (newline))))))
     (method help (self rest-of-line)
       (if (= (Str8 length rest-of-line) 0) (sql-help-index)
         (let ((topic (sql-help-topic rest-of-line))

@@ -52,11 +52,15 @@
 ;                               the set is then the one table of a SELECT *
 ;                               that has them.
 ;   (drop TABLE IF-EXISTS)
+;   (attach PATH NAME IF-NOT-EXISTS)     a SQLite file's tables under NAME,
+;                                        the file's own name when NAME is nil
+;   (detach NAME IF-EXISTS)
 ;
 ; A table of a FROM is a name, a select statement in parentheses, or a
 ; file, (file PATH FORMAT [OPTIONS]): a string, or a call of a function that reads
 ; one, FORMAT then the format it reads, nil for a string; or a table of a
-; SQLite database file, (sqlite PATH TABLE).
+; SQLite database file, (sqlite PATH TABLE); or a table of an attached
+; database, (attached DATABASE TABLE SCHEMA).
 ;
 ;   (copy-to SOURCE PATH FORMAT HEADER)   SOURCE a table's name or a select
 ;                                         statement; FORMAT a name or nil
@@ -1144,7 +1148,22 @@
               (List drop 6 ts)))
       ((and (%sql-word? ts "UNNEST") (%sql-op? (rest ts) "("))
         (%sql-unnest-call (%sql-call "unnest" (rest (rest ts)))))
+      ((and (%sql-name? ts) (%sql-op? (rest ts) ".") (%sql-name? (List drop 2 ts)))
+        (%sql-attached-table ts))
       (#t (pair (%sql-name ts) (rest ts))))))
+
+; A table of an attached database, TS at the database's name: database.table
+; or database.schema.table, as ((attached DATABASE TABLE SCHEMA) .
+; tokens-left), SCHEMA nil when none is written
+(def %sql-attached-table
+  (fn (_ ts)
+    (let ((after (List drop 3 ts)))
+      (if (and (%sql-op? after ".") (%sql-name? (rest after)))
+        (pair (list (lit attached) (List second (first ts)) (List second (List second after))
+                    (List second (List third ts)))
+              (List drop 2 after))
+        (pair (list (lit attached) (List second (first ts)) (List second (List third ts)) ())
+              after)))))
 
 (def %sql-file-function
   (fn (_ name)
@@ -1471,6 +1490,46 @@
                 (rest at))))
       (%sql-near ts))))
 
+; One option of an ATTACH, TS at its name: TYPE sqlite, or READ_ONLY and
+; maybe true.  Any other is not built.
+(def %sql-attach-option
+  (fn (_ ts)
+    (match
+      ((and (%sql-word? ts "TYPE") (%sql-word? (rest ts) "SQLITE"))
+        (pair (lit sqlite) (rest (rest ts))))
+      ((%sql-word? ts "READ_ONLY")
+        (pair (lit read-only) (if (%sql-kw? (rest ts) "TRUE") (rest (rest ts)) (rest ts))))
+      ((null? ts) (%sql-near ts))
+      (#t (error (Str8 str "Not implemented Error: the ATTACH option " (List second (first ts))))))))
+
+; ATTACH [DATABASE] [IF NOT EXISTS] 'file' [AS name] [(option, ...)], as
+; (attach PATH NAME IF-NOT-EXISTS), NAME nil when none is written
+(def %sql-attach
+  (fn (_ ts)
+    (let ((at (if (%sql-word? ts "DATABASE") (rest ts) ts)))
+      (let ((guarded (%sql-after at (list "IF" "NOT" "EXISTS"))))
+        (let ((file (if (null? guarded) at (first guarded))))
+          (unless (and (not (null? file)) (eq? (first (first file)) (lit str)))
+            (%sql-near file))
+          (let ((named (if (%sql-kw? (rest file) "AS")
+                         (pair (%sql-name (rest (rest file))) (List drop 3 file))
+                         (pair () (rest file)))))
+            (let ((options (if (%sql-op? (rest named) "(")
+                             (%sql-parenthesized %sql-attach-option (rest named))
+                             (pair () (rest named)))))
+              (pair (list (lit attach) (List second (first file)) (first named)
+                          (not (null? guarded)))
+                    (rest options)))))))))
+
+; DETACH [DATABASE] [IF EXISTS] name, as (detach NAME IF-EXISTS)
+(def %sql-detach
+  (fn (_ ts)
+    (let ((at (if (%sql-word? ts "DATABASE") (rest ts) ts)))
+      (let ((guarded (%sql-after at (list "IF" "EXISTS"))))
+        (let ((named (if (null? guarded) at (first guarded))))
+          (pair (list (lit detach) (%sql-name named) (not (null? guarded)))
+                (rest named)))))))
+
 ; One select statement in either order, or a WITH before one
 (def %sql-simple-query
   (fn (_ ts)
@@ -1704,6 +1763,8 @@
       ((%sql-word? ts "UPDATE") (%sql-update (rest ts)))
       ((%sql-word? ts "DELETE") (%sql-delete (rest ts)))
       ((%sql-word? ts "DROP") (%sql-drop (rest ts)))
+      ((%sql-word? ts "ATTACH") (%sql-attach (rest ts)))
+      ((%sql-word? ts "DETACH") (%sql-detach (rest ts)))
       ((%sql-word? ts "SET") (%sql-setting (rest ts)))
       ((and (%sql-word? ts "RESET") (%sql-name? (rest ts)))
         (pair (list (lit setting) (List second (first (rest ts))) ()) (rest (rest ts))))

@@ -29,7 +29,7 @@
 (import sql/words sql-lower sql-same-name?)
 (import sql/zone sql-zone-session!)
 (import sql/files sql-file-read sql-file-write sql-file-stem)
-(import sql/sqlite sql-sqlite-read)
+(import sql/sqlite sql-sqlite-read sql-sqlite-tables)
 (import sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
@@ -93,6 +93,37 @@
                   (sql-eval (List second o) ()))))
         (first held)))))
 
+; --- attached databases -------------------------------------------------------
+
+; The databases attached, by their names in lower case: (NAME PATH) each
+(def %sql-attached (Dict make))
+
+; The schema an attached SQLite file's tables are in
+(def %sql-attached-schema "main")
+
+; The file of the database an attached NODE names.  A database that is
+; not attached, and a schema that is not the one a file has, are DuckDB's
+; error for a schema there is not.
+(def %sql-attached-path
+  (fn (_ node)
+    (let ((held (%sql-attached get (sql-lower (List second node))))
+          (schema (List ref 3 node)))
+      (when (null? held)
+        (error (Str8 append "Catalog Error: Table with name \"" (List second node) "." (List third node)
+                            "\" does not exist because schema \"" (List second node)
+                            "\" does not exist.")))
+      (unless (or (null? schema) (str=? (sql-lower schema) %sql-attached-schema))
+        (error (Str8 append "Catalog Error: Table with name \"" (List second node) "." schema "."
+                            (List third node) "\" does not exist because schema \""
+                            (List second node) "." schema "\" does not exist.")))
+      (List second held))))
+
+; The databases attached, each (NAME PATH), in the order of their names
+(def sql-attached
+  (fn (_)
+    (List sort (fn (_ a b) (Str8 <? (sql-lower (first a)) (sql-lower (first b))))
+      (List map (fn (_ key) (%sql-attached get key)) (%sql-attached keys)))))
+
 ; One table of a FROM: a file, a select statement in parentheses, a table a
 ; WITH named, or a table there is.  A file's qualifier is its name without
 ; its directories and its ending.  The qualifier is its alias when it has one
@@ -102,6 +133,9 @@
     (match
       ((and (pair? name) (eq? (first name) (lit renamed)))
         (%sql-source-renamed (%sql-source (List second name) alias) (List third name)))
+      ((and (pair? name) (eq? (first name) (lit attached)))
+        (%sql-result-source (sql-sqlite-read (%sql-attached-path name) (List third name))
+                            (if (null? alias) (List third name) alias)))
       ((and (pair? name) (eq? (first name) (lit sqlite)))
         (%sql-result-source (sql-sqlite-read (List second name) (List third name))
                             (if (null? alias) "sqlite_scan" alias)))
@@ -1713,6 +1747,28 @@
       (when (null? (sql-zone-session! (List third stmt)))
         (error (Str8 str "Not implemented Error: Unknown TimeZone '" (List third stmt) "'!")))
       ())
+    ; A SQLite file's tables under a name: the one written, or the file's
+    ; own without its directories and its ending.  The file is read here
+    ; for its tables, so one that is not there or is no SQLite file is
+    ; refused when it is attached.
+    (method attach (self stmt)
+      (let ((path (List second stmt)))
+        (let ((name (if (null? (List third stmt)) (sql-file-stem path) (List third stmt))))
+          (if (%sql-attached has? (sql-lower name))
+            (unless (List ref 3 stmt)
+              (error (Str8 append "Binder Error: Failed to attach database: database with name \""
+                                  name "\" already exists")))
+            (do (sql-sqlite-tables path)
+                (%sql-attached set! (sql-lower name) (list name path))))
+          ())))
+    (method detach (self stmt)
+      (let ((key (sql-lower (List second stmt))))
+        (if (%sql-attached has? key)
+          (%sql-attached del! key)
+          (unless (List third stmt)
+            (error (Str8 append "Binder Error: Failed to detach database with name \""
+                                (List second stmt) "\": database not found"))))
+        ()))
     (method update (self stmt)
       (when (sql-windowed? (rest (rest stmt)))
         (error "Binder Error: window functions are not allowed in UPDATE"))
@@ -1816,4 +1872,4 @@
     (List for-each (fn (_ name) (%sql-withs del! name)) (%sql-withs keys))
     ((class-static-ref SqlStatement (first stmt)) SqlStatement stmt)))
 
-(provide sql/exec sql-execute sql-table-names sql-table-columns)
+(provide sql/exec sql-execute sql-table-names sql-table-columns sql-attached)

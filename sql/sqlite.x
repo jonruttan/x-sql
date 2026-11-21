@@ -597,15 +597,51 @@
                   (%sq-typed-rows columns (%sq-rows db (rest (List ref 3 row))))
                   (%sq-keyed-rows db columns keys (rest (List ref 3 row))))))))))
 
-; The table NAME of the SQLite file at PATH, as %sq-table answers it.  The
-; file is closed whether the table was read or an error was raised, and
-; the error is raised again with its words.
-(def sql-sqlite-read
-  (fn (_ path name)
+; What F answers for the open file at PATH.  The file is closed whether F
+; answered or an error was raised, and the error is raised again with its
+; words.
+(def %sq-with
+  (fn (_ path f)
     (let ((db (%sq-open path)))
       (let ((read (guard (e (pair (lit failed) (Str8 str e)))
-                    (pair (lit read) (%sq-table db name)))))
+                    (pair (lit read) (f db)))))
         (File close (db get (lit fd)))
         (if (eq? (first read) (lit failed)) (error (rest read)) (rest read))))))
 
-(provide sql/sqlite sql-sqlite-read)
+; The table NAME of the SQLite file at PATH, as %sq-table answers it
+(def sql-sqlite-read
+  (fn (_ path name) (%sq-with path (fn (_ db) (%sq-table db name)))))
+
+; What SQLite names its own tables with at the start
+(def %sq-own "sqlite_")
+
+; The names of the tables and the views of the SQLite file at PATH, in the
+; order the file has them, SQLite's own left out
+(def sql-sqlite-tables
+  (fn (_ path)
+    (%sq-with path
+      (fn (_ db)
+        (List map (fn (_ row) (rest (List second row)))
+          (List filter
+            (fn (_ row)
+              (and (not (null? (first row))) (not (null? (List second row)))
+                   (List includes? (rest (first row)) (list "table" "view"))
+                   (not (Str8 starts? %sq-own (sql-lower (rest (List second row)))))))
+            (List map (fn (_ row) (%sq-record (rest row))) (%sq-rows db 1))))))))
+
+; The columns of the table NAME of the SQLite file at PATH, each (NAME
+; TYPE), TYPE the symbol blob for one DuckDB reads as a BLOB; nil for a
+; view, whose columns its own statement says
+(def sql-sqlite-columns
+  (fn (_ path name)
+    (%sq-with path
+      (fn (_ db)
+        (let ((row (%sq-schema-row db name)))
+          (match
+            ((null? row)
+              (error (Str8 append "Catalog Error: Table with name " name " does not exist!")))
+            ((str=? (rest (first row)) "view") ())
+            (#t (List map (fn (_ c) (list (first c) (List second c)))
+                          (first (%sq-columns (rest (List ref 4 row))))))))))))
+
+(provide sql/sqlite sql-sqlite-read sql-sqlite-tables sql-sqlite-columns)
