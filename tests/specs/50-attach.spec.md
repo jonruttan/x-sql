@@ -1,4 +1,4 @@
-A SQLite file attached under a name (`sql/exec.x`, `sql/sqlite.x`):
+A SQLite file attached under a name (`lib/sql/exec.x`, `lib/sql/sqlite.x`):
 `ATTACH 'file' AS name`, its tables then `name.table`, and `DETACH name`.
 The session of a spec file is one, so each case lets go of the name it
 attaches before it attaches it.

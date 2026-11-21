@@ -1,4 +1,4 @@
-A table of a SQLite database file (`sql/sqlite.x`), read with
+A table of a SQLite database file (`lib/sql/sqlite.x`), read with
 `sqlite_scan('file', 'table')` as DuckDB's sqlite extension reads one.
 The file is `tests/fixtures/shop.sqlite3`, which
 `tests/fixtures/make-shop.sh` makes.

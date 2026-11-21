@@ -6,8 +6,8 @@
 ; @copyright 2026 Jon Ruttan
 ; @license MIT No Attribution (MIT-0)
 ;
-; The lang kit's generator writes tests/lib/harness.gen.x: the dialect
-; lang.xon declares, the bundle's root on the import path, then this file.
+; The bundle kit's generator writes tests/lib/harness.gen.x: the dialect
+; bundle.xon declares, the bundle's root on the import path, then this file.
 (import sql/lex sql-lex sql-tokenize)
 (import sql/parse sql-parse)
 (import sql/base sql-version sql-run)
@@ -62,8 +62,9 @@
 
 ; Where the fixture files are, and where a case may write one: both under
 ; the bundle, wherever it is.  tests/lib is not kept by git.
-(def sql-fixtures (Str8 append %lang-root "/tests/fixtures/"))
-(def sql-scratch (Str8 append %lang-root "/tests/lib/"))
+(import x/sys/bundle)
+(def sql-fixtures (Str8 append (Bundle root "sql") "/tests/fixtures/"))
+(def sql-scratch (Str8 append (Bundle root "sql") "/tests/lib/"))
 
 ; A case's statements with {F} and {S} in them as those two directories
 (def sql-files

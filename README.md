@@ -26,8 +26,8 @@ here.
 
 ## Status
 
-Pre-release: no release has been cut. Paired with x-lang v0.59.0
-(`lang.xon` is the checkable row).
+Pre-release: no release has been cut. Paired with x-lang v0.60.0
+(`bundle.xon` is the checkable row).
 
 What is built:
 
@@ -179,7 +179,7 @@ What is built:
   and a value the colour the theme gives its kind in a statement: a
   number, a text, a truth.
 - **The prompt.** A statement ends at a semicolon and may span lines.
-  A line is coloured as it is typed, by the grammar `sql/syntax.x`, in
+  A line is coloured as it is typed, by the grammar `lib/sql/syntax.x`, in
   the colours of x-lang's theme; brackets take their depth's colour and
   the pair beside the cursor is inverse. Tab completes a keyword, a
   type, a function, a table or a column. `.help`, `.help TOPIC` and, for a function, `.help NAME`,
@@ -195,10 +195,10 @@ What is built:
   notice and what a statement did are in the server's client's words.
   `.disconnect` comes back to the engine here.
   - `postgres://user:password@host:port/database`: PostgreSQL's wire
-    protocol (`sql/pg.x`), the simple query, with sign-in by trust, a
+    protocol (`lib/sql/pg.x`), the simple query, with sign-in by trust, a
     password in the clear, MD5 and SCRAM-SHA-256.
   - `mysql://` and `mariadb://`: the protocol MySQL and MariaDB share
-    (`sql/my.x`), with sign-in by `mysql_native_password`, and by
+    (`lib/sql/my.x`), with sign-in by `mysql_native_password`, and by
     `caching_sha2_password` where the server has the password cached.
 - **TLS.** `?sslmode=` after a URL: `disable`; `prefer`, TLS when the
   server has it; `require`, TLS or no connection; `verify-full`, that
@@ -207,7 +207,7 @@ What is built:
   platform's (`x/net/tls13`). Nothing said is `prefer`. Over TLS a
   MySQL server may be given the whole password, which
   `caching_sha2_password` asks for when it has not the password cached.
-- **Files.** `lang.xon` declares the grammar, so x-lang's tools colour a
+- **Files.** `bundle.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
 Anything else is refused by name (`Not implemented Error: the type UUID`) and not
@@ -276,6 +276,6 @@ No script runs against Oracle's MySQL.
 
 ## Install
 
-    make install    # into <share>/langs/sql, where `x -l sql` looks
+    make install    # into <share>/bundles/sql, where `x -l sql` looks
 
 <p align="center"><img src="docs/bitwise-mark.svg" alt="Bitwise" width="96"></p>

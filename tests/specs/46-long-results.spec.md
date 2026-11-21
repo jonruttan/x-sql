@@ -1,4 +1,4 @@
-A long result cut (`sql/render.x`), as DuckDB cuts one: `.maxrows N`
+A long result cut (`lib/sql/render.x`), as DuckDB cuts one: `.maxrows N`
 says the most rows shown.  With nothing said it is forty on a terminal,
 and every row anywhere else, which is where the suite's output goes; so
 each case here says its own, and DuckDB was given the same `.maxrows`.

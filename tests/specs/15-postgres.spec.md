@@ -4,7 +4,7 @@
      with the compiled digest, and several times that where the assembler
      lane is closed and the digest runs interpreted. -->
 
-PostgreSQL's wire protocol (`sql/pg.x`), with no server: `canned-link` is the
+PostgreSQL's wire protocol (`lib/sql/pg.x`), with no server: `canned-link` is the
 harness's link whose server is the bytes a case spells in hex, and which
 shows what is sent to it, a write a line after `sent`.  The bytes on both
 sides, and the digests, were worked out apart from this bundle, by a

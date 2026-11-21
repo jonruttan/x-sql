@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/syntax.x -- the SQL highlighting grammar
+; ## lib/sql/syntax.x -- the SQL highlighting grammar
 ;
 ; @description The grammar x/tool/syntax colours SQL with: comments,
 ;   strings, numbers, keywords, types, the constants and the functions.
@@ -8,7 +8,7 @@
 ; @copyright 2026 Jon Ruttan
 ; @license MIT No Attribution (MIT-0)
 ;
-; lang.xon's (grammar sql ...) form names this module, and x/tool/syntax
+; bundle.xon's (grammar sql ...) form names this module, and x/tool/syntax
 ; imports it the first time a file needs the grammar, in whatever process
 ; is colouring.  So it imports x-lang libraries and sql/words only, never
 ; the interpreter.  The prompt paints a line with the same rules.

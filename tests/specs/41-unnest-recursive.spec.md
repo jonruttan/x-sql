@@ -1,5 +1,5 @@
 unnest to more than one level: `recursive := true`, `max_depth := n`
-and `keep_parent_names := true` (`sql/exec.x`).
+and `keep_parent_names := true` (`lib/sql/exec.x`).
 
 Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -c`, unless a case says otherwise.
 

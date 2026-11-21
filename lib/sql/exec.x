@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/exec.x -- the tables, and what a statement does to them
+; ## lib/sql/exec.x -- the tables, and what a statement does to them
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

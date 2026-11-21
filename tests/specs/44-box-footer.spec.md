@@ -1,4 +1,4 @@
-The line under a result's box (`sql/render.x`): its rows counted when
+The line under a result's box (`lib/sql/render.x`): its rows counted when
 there are ten or more, and its columns when there are several and the
 box has room.
 
