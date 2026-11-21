@@ -121,7 +121,9 @@ What is built:
 - **Joins.** `JOIN ... ON`, `LEFT`, `RIGHT` and `FULL [OUTER] JOIN`,
   `CROSS JOIN`, and tables listed with commas; `JOIN ... USING (...)` and
   `NATURAL JOIN`, inner and left, the shared columns shown once; a table
-  joined to itself under two aliases.
+  joined to itself under two aliases. A condition with an equality of
+  the two sides in it is joined by that key, each row tried only beside
+  the rows of its own; any other tries every pair.
 - **Set operations.** `UNION`, `INTERSECT` and `EXCEPT`, each with or
   without `ALL`; a trailing `ORDER BY` and `LIMIT` are the whole's. A
   select statement in parentheses is a side, with an `ORDER BY` and
