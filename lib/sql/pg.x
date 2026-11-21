@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/pg.x -- PostgreSQL's wire protocol, the client's end
+; ## lib/sql/pg.x -- PostgreSQL's wire protocol, the client's end
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

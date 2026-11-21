@@ -1,4 +1,4 @@
-A CSV's separator and its other options (`sql/files.x`): found when
+A CSV's separator and its other options (`lib/sql/files.x`): found when
 nothing says, or said to `read_csv` and to `COPY`.
 
 Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -c`, unless a case says otherwise.

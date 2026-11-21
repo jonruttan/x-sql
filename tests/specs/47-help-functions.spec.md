@@ -1,4 +1,4 @@
-`.help NAME` for a function (`sql/help.x`): how it is written, what it
+`.help NAME` for a function (`lib/sql/help.x`): how it is written, what it
 answers, its other names and the topic it is under.  The functions are
 rows of `sql-help-functions`, and the first case holds every function
 the evaluator has to one.

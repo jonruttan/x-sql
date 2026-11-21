@@ -1,4 +1,4 @@
-The colour a value has in a result's box (`sql/render.x`): the class of
+The colour a value has in a result's box (`lib/sql/render.x`): the class of
 the theme its type is drawn as, where colour is on.  Nothing here is
 coloured, the suite's output being no terminal; the cases read the
 classes the colours come from.

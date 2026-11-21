@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/repl.x -- the prompt
+; ## lib/sql/repl.x -- the prompt
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan
@@ -499,6 +499,9 @@
 ; Whether this lang owns the session: the wrapper names the first -l in
 ; %lang-lead, and a bundle named by a later one is loaded beside it.  A
 ; wrapper older than the seam binds nothing, and the answer then is yes.
+; The wrapper binds %lang-lead before the entry is imported; nothing in
+; the bundle defines it, and the linter is told so.
+; lint-known: %lang-lead
 (def sql-leads?
   (fn (_) (guard (_ #t) (str=? %lang-lead "sql"))))
 

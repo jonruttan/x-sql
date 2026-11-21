@@ -6,7 +6,7 @@ from.  The expectations are written by hand.
 ## colour grammar
 
 `sql-spans` is the harness's: each span of the `sql` grammar
-(`sql/syntax.x`) as its class and its bytes.  A token with no class is
+(`lib/sql/syntax.x`) as its class and its bytes.  A token with no class is
 left out.
 
 ### keywords, a function, punctuation, operators, a number, a string and a comment
