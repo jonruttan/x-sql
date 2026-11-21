@@ -3380,6 +3380,7 @@
                      (class-static-methods SqlAggregate)))
       sql-window-functions)))
 
+(def sql-int-type? %sql-int?)
 (def sql-truth %sql-truth)
 (def sql-order %sql-order)
 (def sql-null? %sql-null?)
@@ -3391,4 +3392,4 @@
   sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type? sql-pointed? sql-function-names
-  sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each)
+  sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each sql-int-type?)

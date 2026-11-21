@@ -37,7 +37,7 @@
   sql-aggregated? sql-aggregate-call? sql-cast
   sql-windowed? sql-scope-windowed sql-window-aggregate sql-type-name sql-pointed?
   sql-truth sql-order sql-null? sql-value-text
-  sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each)
+  sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each sql-int-type?)
 
 ; --- the tables --------------------------------------------------------------
 
@@ -148,6 +148,140 @@
               (rest right)))
           ())))))
 
+; --- a join by key ------------------------------------------------------------
+;
+; A join whose condition says a value of the left's row equals a value of
+; the right's need not try every pair.  The right's rows are held by that
+; value, and each left row is tried beside the ones that have its own.
+; The whole condition is still asked of each pair that is tried, so the
+; key only says which pairs could be kept, never which are.
+
+; The conditions an AND of conditions is made of
+(def %sql-conjuncts
+  (fn (self test)
+    (if (and (pair? test) (eq? (first test) (lit and)))
+      (List append (self (List second test)) (self (List third test)))
+      (list test))))
+
+; The heads of the nodes a key is not read through: each answers from
+; more than its own row
+(def %sql-key-refused (list (lit subquery) (lit exists) (lit in-query) (lit over) (lit unnest) (lit lambda)))
+
+; The col nodes of the expression E; the symbol refused when E holds a
+; node a key is not read through
+(def %sql-cols-in
+  (fn (self e)
+    (match
+      ((not (pair? e)) ())
+      ((eq? (first e) (lit col)) (list e))
+      ((List includes? (first e) %sql-key-refused) (lit refused))
+      (#t
+        (List fold
+          (fn (_ found inner)
+            (let ((more (if (eq? found (lit refused)) found (self inner))))
+              (match
+                ((eq? found (lit refused)) found)
+                ((eq? more (lit refused)) more)
+                (#t (List append found more)))))
+          () e)))))
+
+; Whether the col NODE names a column of COLUMNS
+(def %sql-col-of?
+  (fn (_ node columns)
+    (guard (_ #f) (do (sql-column-index node columns) #t))))
+
+; Whether E is answered from a row of OWN alone: it names a column, every
+; column it names is one of OWN's, and none is one of OTHER's
+(def %sql-side-of?
+  (fn (_ e own other)
+    (let ((cols (%sql-cols-in e)))
+      (and (not (eq? cols (lit refused)))
+           (not (null? cols))
+           (List all? (fn (_ c) (and (%sql-col-of? c own) (not (%sql-col-of? c other)))) cols)))))
+
+; The type E has over a row of COLUMNS, nil when it cannot be told
+(def %sql-key-type
+  (fn (_ e columns)
+    (guard (_ ()) (first (sql-eval e (sql-scope columns (%sql-nulls columns) () ()))))))
+
+; Whether two values of the types A and B are equal just when they are
+; shown as the same text: two whole numbers of any widths, or two values
+; of one type that is not a floating point number, a list or a struct
+(def %sql-key-types?
+  (fn (_ a b)
+    (match
+      ((or (null? a) (null? b)) #f)
+      ((and (sql-int-type? a) (sql-int-type? b)) #t)
+      ((not (equal? a b)) #f)
+      ((pair? a) (eq? (first a) (lit decimal)))
+      (#t (not (List includes? a (list (lit double) (lit real) (lit null))))))))
+
+; The equalities of TEST a key can be made of, as ((LEFT-EXPR . RIGHT-EXPR)
+; ...): each says an expression of the LEFT columns' row equals one of the
+; RIGHT's
+(def %sql-key-pairs
+  (fn (_ test left right)
+    (List flat-map
+      (fn (_ c)
+        (if (and (pair? c) (eq? (first c) (lit bin)) (eq? (List second c) (lit eq)))
+          (let ((a (List third c)) (b (List ref 3 c)))
+            (let ((found (match
+                           ((and (%sql-side-of? a left right) (%sql-side-of? b right left)) (pair a b))
+                           ((and (%sql-side-of? b left right) (%sql-side-of? a right left)) (pair b a))
+                           (#t ()))))
+              (if (and (not (null? found))
+                       (%sql-key-types? (%sql-key-type (first found) left)
+                                        (%sql-key-type (rest found) right)))
+                (list found)
+                ())))
+          ()))
+      (%sql-conjuncts test))))
+
+; The key a ROW of COLUMNS has: what EXPRS are for it, as one text; nil
+; when one of them is NULL, which equals nothing
+(def %sql-row-key
+  (fn (_ exprs columns row)
+    (let ((values (List map (fn (_ e) (sql-eval e (sql-scope columns row () ()))) exprs)))
+      (if (List any? sql-null? values) () (%sql-values-key values)))))
+
+; LEFT joined to RIGHT as %sql-join-rows joins them, each left row tried
+; only beside the right rows that have its key.  LEFT-KEY and RIGHT-KEY
+; answer a row's key, nil for none.
+(def %sql-keyed-join-rows
+  (fn (_ left right kind keeps? left-key right-key)
+    (let ((held (Dict make)) (matched (Dict make))
+          (numbered (List map (fn (_ r i) (pair i r)) (rest right)
+                              (List range 0 (List length (rest right))))))
+      ; The right's rows by their key, each key's in the right's order
+      (sql-swept-each
+        (fn (_ entry)
+          (let ((k (right-key (rest entry))))
+            (unless (null? k) (held set! k (pair entry (held get-or () k))))))
+        (List reverse numbered))
+      (let ((joined (sql-swept-map
+                      (fn (_ l)
+                        (let ((k (left-key l)))
+                          (List flat-map
+                            (fn (_ entry)
+                              (let ((row (List append l (rest entry))))
+                                (if (keeps? row)
+                                  (do (matched set! (first entry) #t) (list row))
+                                  ())))
+                            (if (null? k) () (held get-or () k)))))
+                      (rest left))))
+        (List append
+          (List flat-map
+            (fn (_ p)
+              (if (and (null? (rest p))
+                       (List includes? kind (list (lit left) (lit full))))
+                (list (List append (first p) (%sql-nulls (first right))))
+                (rest p)))
+            (List zip (rest left) joined))
+          (if (List includes? kind (list (lit right) (lit full)))
+            (List map (fn (_ entry) (List append (%sql-nulls (first left)) (rest entry)))
+              (List reject (fn (_ entry) (matched has? (first entry))) numbered))
+            ()))))))
+
 ; The columns of COLUMNS a name with no qualifier finds
 (def %sql-named
   (fn (_ name columns)
@@ -188,7 +322,8 @@
 
 ; LEFT joined to RIGHT.  With USING, a list of names or the name natural,
 ; the rows kept are those equal in each name's column, and the right's
-; column of each name is hidden: the left's stands for both.
+; column of each name is hidden: the left's stands for both.  A condition
+; that has an equality of the two sides in it is joined by that key.
 (def %sql-join
   (fn (_ left right kind on using)
     (when (sql-aggregated? on)
@@ -208,11 +343,16 @@
                              c))
                          (first right)))))
         (let ((visible (List append (first left) (first right))))
-          (pair columns
-            (%sql-join-rows left right kind
-              (fn (_ row)
-                (if (null? test) #t
-                  (eq? (sql-truth (sql-eval test (sql-scope visible row () ()))) #t))))))))))
+          (let ((keeps? (fn (_ row)
+                          (if (null? test) #t
+                            (eq? (sql-truth (sql-eval test (sql-scope visible row () ()))) #t))))
+                (keys (if (null? test) () (%sql-key-pairs test (first left) (first right)))))
+            (pair columns
+              (if (null? keys)
+                (%sql-join-rows left right kind keeps?)
+                (%sql-keyed-join-rows left right kind keeps?
+                  (fn (_ row) (%sql-row-key (List map first keys) (first left) row))
+                  (fn (_ row) (%sql-row-key (List map rest keys) (first right) row)))))))))))
 
 ; --- unnest ------------------------------------------------------------------
 
