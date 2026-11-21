@@ -2205,14 +2205,28 @@
 ; How many rows are answered between sweeps
 (def %sql-sweep-every 200)
 
-; ITEMS as F answers each
-(def sql-swept-map
-  (fn (_ f items)
+; ITEMS as F answers each, a sweep asked for every EVERY of them
+(def %sql-swept-map-every
+  (fn (_ every f items)
     (let ((go (fn (self left done n)
                 (if (null? left) (List reverse done)
-                  (do (when (= (Num remainder n %sql-sweep-every) 0) (Heap collect))
+                  (do (when (= (Num remainder n every) 0) (Heap collect))
                       (self (rest left) (pair (f (first left)) done) (+ n 1)))))))
       (go items () 1))))
+
+; ITEMS as F answers each
+(def sql-swept-map
+  (fn (_ f items) (%sql-swept-map-every %sql-sweep-every f items)))
+
+; ITEMS as F answers each, where F itself goes over INNER rows for each: a
+; sweep is asked for as often as that many rows have been gone over, and
+; no less often than every item
+(def sql-swept-map-over
+  (fn (_ inner f items)
+    (%sql-swept-map-every
+      (let ((every (Num quotient %sql-sweep-every (if (< inner 1) 1 inner))))
+        (if (< every 1) 1 every))
+      f items)))
 
 ; The ITEMS that KEEP? is true of
 (def sql-swept-filter
@@ -3377,4 +3391,4 @@
   sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type? sql-pointed? sql-function-names
-  sql-swept-map sql-swept-filter sql-swept-each)
+  sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each)
