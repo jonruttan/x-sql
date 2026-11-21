@@ -32,7 +32,7 @@
   sql-run sql-error-text sql-connect! sql-disconnect! sql-connection
   sql-connection-secure?)
 (import sql/exec sql-table-names sql-table-columns sql-attached)
-(import sql/sqlite sql-sqlite-tables sql-sqlite-columns)
+(import sql/sqlite sql-sqlite-tables sql-sqlite-columns sql-sqlite-view)
 (import sql/eval sql-type-name)
 (import sql/render sql-max-rows!)
 (import sql/number sql-decimal-read)
@@ -272,7 +272,7 @@
 
 ; A table of an attached database, NAME written database.table, as the
 ; statement that would make it; nil when NAME names no attached database.
-; A view has no columns to show.
+; A view is shown as the statement the file keeps for it.
 (def %sql-attached-schema
   (fn (_ name)
     (let ((at (Str8 index-of "." name)))
@@ -282,14 +282,15 @@
                     (sql-attached)))))
         (if (null? db) ()
           (let ((table (Str8 sub (+ at 1) (Str8 length name) name)))
-            (Str8 append "CREATE TABLE " (first db) "." table "("
-              (Str8 join ", "
-                (List map
-                  (fn (_ c)
-                    (Str8 append (first c) " "
-                      (if (eq? (List second c) (lit blob)) "BLOB" (sql-type-name (List second c)))))
-                  (sql-sqlite-columns (List second db) table)))
-              ");")))))))
+            (let ((view (sql-sqlite-view (List second db) table)))
+              (if (null? view)
+                (Str8 append "CREATE TABLE " (first db) "." table "("
+                  (Str8 join ", "
+                    (List map
+                      (fn (_ c) (Str8 append (first c) " " (sql-type-name (List second c))))
+                      (sql-sqlite-columns (List second db) table)))
+                  ");")
+                (Str8 append (List third view) ";")))))))))
 
 ; The prompt says where statements go: sql> here, and a server's database
 ; and host when there is one

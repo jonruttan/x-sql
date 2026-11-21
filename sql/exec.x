@@ -29,7 +29,8 @@
 (import sql/words sql-lower sql-same-name?)
 (import sql/zone sql-zone-session!)
 (import sql/files sql-file-read sql-file-write sql-file-stem)
-(import sql/sqlite sql-sqlite-read sql-sqlite-tables)
+(import sql/sqlite sql-sqlite-read sql-sqlite-tables sql-sqlite-view)
+(import sql/parse sql-parse)
 (import sql/eval
   sql-eval sql-expr-name sql-scope sql-select-runner! sql-column
   sql-column-hidden? sql-column-hide sql-column-node sql-column-index
@@ -124,6 +125,41 @@
     (List sort (fn (_ a b) (Str8 <? (sql-lower (first a)) (sql-lower (first b))))
       (List map (fn (_ key) (%sql-attached get key)) (%sql-attached keys)))))
 
+; --- a SQLite file's views ----------------------------------------------------
+;
+; A view is a statement the file keeps, written for SQLite.  It is run
+; here as any statement is, and a table it names with no database is the
+; file's own, whatever tables and WITH names the session has.
+
+; The files whose views are being run, the innermost first
+(def %sql-view-files (Dict make))
+(def %sql-view-file (fn (_) (%sql-view-files get-or () (lit files))))
+
+; Whether the SQLite file at PATH has a table or a view NAME, in any case
+(def %sql-sqlite-has?
+  (fn (_ path name)
+    (List any? (fn (_ t) (str=? (sql-lower t) (sql-lower name))) (sql-sqlite-tables path))))
+
+; The table or the view NAME of the SQLite file at PATH: (NAMES TYPES
+; ROWS).  A view's statement is run with the session's WITH names put
+; aside and the file the place its tables are looked for, and both are put
+; back whether it answered or not.
+(def %sql-sqlite-result
+  (fn (_ path name)
+    (let ((view (sql-sqlite-view path name)))
+      (if (null? view) (sql-sqlite-read path name)
+        (let ((files (%sql-view-file))
+              (withs (List map (fn (_ key) (pair key (%sql-withs get key))) (%sql-withs keys))))
+          (List for-each (fn (_ w) (%sql-withs del! (first w))) withs)
+          (%sql-view-files set! (lit files) (pair path files))
+          (let ((read (guard (e (pair (lit failed) (Str8 str e)))
+                        (pair (lit read) (%sql-query-result (first (sql-parse (List second view))) ())))))
+            (%sql-view-files set! (lit files) files)
+            (List for-each (fn (_ w) (%sql-withs set! (first w) (rest w))) withs)
+            (when (eq? (first read) (lit failed)) (error (rest read)))
+            (if (null? (first view)) (rest read)
+              (pair (first view) (rest (rest read))))))))))
+
 ; One table of a FROM: a file, a select statement in parentheses, a table a
 ; WITH named, or a table there is.  A file's qualifier is its name without
 ; its directories and its ending.  The qualifier is its alias when it has one
@@ -134,10 +170,10 @@
       ((and (pair? name) (eq? (first name) (lit renamed)))
         (%sql-source-renamed (%sql-source (List second name) alias) (List third name)))
       ((and (pair? name) (eq? (first name) (lit attached)))
-        (%sql-result-source (sql-sqlite-read (%sql-attached-path name) (List third name))
+        (%sql-result-source (%sql-sqlite-result (%sql-attached-path name) (List third name))
                             (if (null? alias) (List third name) alias)))
       ((and (pair? name) (eq? (first name) (lit sqlite)))
-        (%sql-result-source (sql-sqlite-read (List second name) (List third name))
+        (%sql-result-source (%sql-sqlite-result (List second name) (List third name))
                             (if (null? alias) "sqlite_scan" alias)))
       ((and (pair? name) (eq? (first name) (lit file)))
         (%sql-result-source (sql-file-read (List second name) (List third name)
@@ -147,6 +183,9 @@
         (%sql-result-source (%sql-query-result name ()) (if (null? alias) %sql-unnamed alias)))
       ((%sql-withs has? (%sql-key name))
         (%sql-result-source (%sql-withs get (%sql-key name)) (if (null? alias) name alias)))
+      ((and (not (null? (%sql-view-file))) (%sql-sqlite-has? (first (%sql-view-file)) name))
+        (%sql-result-source (%sql-sqlite-result (first (%sql-view-file)) name)
+                            (if (null? alias) name alias)))
       (#t
         (let ((table (%sql-table name)))
           (let ((qualifier (if (null? alias) (first table) alias)))
