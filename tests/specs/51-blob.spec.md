@@ -1,6 +1,6 @@
-The BLOB type (`sql/eval.x`), and what of a SQLite file needs it or a
-statement run: its BLOB columns and its views (`sql/sqlite.x`,
-`sql/exec.x`).
+The BLOB type (`lib/sql/eval.x`), and what of a SQLite file needs it or a
+statement run: its BLOB columns and its views (`lib/sql/sqlite.x`,
+`lib/sql/exec.x`).
 
 Expected output is DuckDB 2.0.0's own with its sqlite extension, taken from `duckdb -no-agent -c`, unless a case says otherwise.
 
