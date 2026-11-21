@@ -202,6 +202,8 @@
             "REAL (FLOAT, FLOAT4)   32-bit floating point"
             "VARCHAR (TEXT, STRING) text"
             "BOOLEAN (BOOL)         true or false"
+            "BLOB (BYTEA, BINARY, VARBINARY)   bytes; 'ab\\x00'::BLOB, a byte that"
+            "                       is no plain character as \\x and two digits"
             "DATE  TIME  TIMESTAMP  INTERVAL     see .help dates"
             "TIMESTAMPTZ            a moment with a time zone; see .help zones"
             "A constant: 42 is an INTEGER or the wider type that holds it, and"
@@ -301,6 +303,18 @@
           "functions" (list))
     (list "length" "length(text)"
           "how many characters a text has; of a list, how many elements"
+          "functions" (list))
+    (list "octet_length" "octet_length(blob)"
+          "how many bytes a BLOB has"
+          "functions" (list))
+    (list "hex" "hex(blob | text)"
+          "the bytes of a BLOB, or of a text, as hexadecimal digits"
+          "functions" (list))
+    (list "unhex" "unhex(text)"
+          "the BLOB the hexadecimal digits of a text say"
+          "functions" (list "from_hex"))
+    (list "encode" "encode(text)"
+          "a text as the BLOB of its bytes"
           "functions" (list))
     (list "trim" "trim(text [, characters])"
           "the text without the blanks, or the characters named, at both ends"
