@@ -102,8 +102,15 @@
         (list (lit interval) "INTERVAL" "interval")
         (list (lit null) "NULL" "\"null\"")))
 
+; The row of ROWS whose first is KEY.  It is walked here, a row at a time:
+; a type is asked of several times for every value answered, and a
+; function handed to a finder is made anew at each asking.
 (def %sql-row
-  (fn (_ key rows) (List find (fn (_ r) (eq? (first r) key)) rows)))
+  (fn (self key rows)
+    (match
+      ((null? rows) ())
+      ((eq? (first (first rows)) key) (first rows))
+      (#t (self key (rest rows))))))
 
 (def %sql-int? (fn (_ t) (not (null? (%sql-row t %sql-int-rows)))))
 (def %sql-limit (fn (_ t) (List second (%sql-row t %sql-int-rows))))
@@ -632,7 +639,8 @@
           (%sql-decimal-arith sign word f a b))
         (#t (%sql-integer-arith sign word f a b))))))
 
-; // or %: integers only
+; // or %: integers only.  NAME answers the expression spelled out, and is
+; asked only when the refusal is written.
 (def %sql-divide
   (fn (_ sign f a b name)
     (when (or (%sql-float? (first a)) (%sql-float? (first b))
@@ -645,7 +653,7 @@
         ((or (%sql-null? a) (%sql-null? b)) (pair t ()))
         ((= (rest b) 0)
           (error (Str8 str "Invalid Input Error: Division by zero in expression "
-                           name ".")))
+                           (name) ".")))
         (#t (%sql-checked t (f (rest a) (rest b)) "division" sign a b))))))
 
 ; /: a double, or a REAL when either is one and neither a double
@@ -757,6 +765,11 @@
                              x "' to BOOL")))))))
 
 ; --- the operators -----------------------------------------------------------
+;
+; An operator is a static method of two values and NAME, a function that
+; answers the expression spelled out.  It is a function and not the text
+; because an operator is answered for every row and the text is wanted
+; only in an error.
 
 (def-class SqlOp ()
   (static
@@ -2080,6 +2093,32 @@
         ((List any? %sql-null? among) ())
         (#t #f)))))
 
+; A function's name as it is written, to the symbol its methods are named
+; by: the name in lower case.  Each spelling is folded once and held; a
+; call is answered for every row, and folding a name costs far more than
+; finding it.
+(def %sql-call-symbols (Dict make))
+
+(def %sql-call-symbol
+  (fn (_ name)
+    (let ((held (%sql-call-symbols get name)))
+      (if (null? held)
+        (let ((made (Str8 ->sym (sql-lower name))))
+          (%sql-call-symbols set! name made)
+          made)
+        held))))
+
+; Whether X is one of ITEMS, the same thing and not one like it
+(def %sql-among?
+  (fn (self x items)
+    (match
+      ((null? items) #f)
+      ((eq? x (first items)) #t)
+      (#t (self x (rest items))))))
+
+; The window functions' names as the symbols a call's name is
+(def %sql-window-symbols (List map (fn (_ name) (Str8 ->sym name)) sql-window-functions))
+
 (def sql-eval
   (fn (_ node scope)
     ((class-static-ref SqlNode (first node)) SqlNode node scope)))
@@ -2630,18 +2669,16 @@
               (pair (first (rest (rest (%sql-nth (first scope) i))))
                     (%sql-nth (first (rest scope)) i)))))))
     (method call (self node scope)
-      (let ((aggregate (class-static-ref SqlAggregate
-                         (Str8 ->sym (sql-lower (List second node))))))
+      (let ((name (%sql-call-symbol (List second node))))
+       (let ((aggregate (class-static-ref SqlAggregate name)))
         (match
           ((List any? %sql-lambda? (List third node))
-            (let ((taker (class-static-ref SqlLambda
-                           (Str8 ->sym (sql-lower (List second node))))))
+            (let ((taker (class-static-ref SqlLambda name)))
               (if (null? taker) (error "Binder Error: This scalar function does not support lambdas!")
                 (taker SqlLambda node scope))))
           ((null? aggregate)
-            (let ((function (class-static-ref SqlFunction
-                              (Str8 ->sym (sql-lower (List second node))))))
-              (when (List includes? (sql-lower (List second node)) sql-window-functions)
+            (let ((function (class-static-ref SqlFunction name)))
+              (when (%sql-among? name %sql-window-symbols)
                 (error "Binder Error: Window functions are not supported here"))
               (when (or (null? function) (List ref 3 node)
                         (List any? (fn (_ a) (eq? (first a) (lit star))) (List third node)))
@@ -2656,7 +2693,7 @@
             (error "Binder Error: aggregate function calls cannot contain window function calls"))
           ((or (null? scope) (null? (List third scope)))
             (error "Binder Error: an aggregate has no group of rows here"))
-          (#t (aggregate SqlAggregate node scope)))))
+          (#t (aggregate SqlAggregate node scope))))))
     (method case (self node scope)
       (let ((whens (List second node)) (otherwise (List third node)))
         (let ((t (sql-common-type
@@ -2741,7 +2778,7 @@
         ((class-static-ref SqlOp (List second node)) SqlOp
          (%sql-constant-beside (List third node) a b)
          (%sql-constant-beside (List ref 3 node) b a)
-         (sql-expr-name node))))))
+         (fn (_) (sql-expr-name node)))))))
 
 ; How a binary operator is spelled in a heading
 (def %sql-op-text
