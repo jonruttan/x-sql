@@ -136,9 +136,9 @@ What is built:
   `skip`, `nullstr`, `names`, `columns`, `types` and `all_varchar`, as
   `read_csv('f.csv', delim = ';', header = false)`. `sqlite_scan('file.db',
   'table')` is a table of a SQLite database file, read from the file's
-  pages, its columns in DuckDB's types for their declared ones; a view, a
-  table made `WITHOUT ROWID` and a column DuckDB reads as a BLOB are not
-  read yet. `COPY table TO 'file'`, `COPY
+  pages, its columns in DuckDB's types for their declared ones, a table
+  made `WITHOUT ROWID` from the index its rows are in; a view and a
+  column DuckDB reads as a BLOB are not read yet. `COPY table TO 'file'`, `COPY
   (SELECT ...) TO 'file'` and `COPY table FROM 'file'`, as CSV or as
   JSON, an object a line, a list written as an array and a struct as an
   object; `COPY` takes `DELIMITER` (or `SEP`) and `NULLSTR` beside
