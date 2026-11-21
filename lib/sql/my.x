@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/my.x -- MySQL's wire protocol, the client's end
+; ## lib/sql/my.x -- MySQL's wire protocol, the client's end
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

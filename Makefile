@@ -1,20 +1,20 @@
-# Install copies this bundle to <share>/langs/sql, where `x -l` looks: a lang is
+# Install copies this bundle to <share>/bundles/sql, where `x -l` looks: a bundle is
 # installed when its files are there. No registry, no database.
 
 X ?= x
 
-# The version is derived from git describe, never committed: lang.xon declares
+# The version is derived from git describe, never committed: bundle.xon declares
 # what this lang requires; the installed artifact carries what it is.
 LANG_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 SHARE := $(if $(PREFIX),$(PREFIX)/share/x,$(shell $(X) --share-dir))
-DEST  := $(SHARE)/langs/sql
+DEST  := $(SHARE)/bundles/sql
 
-# What a consumer needs to run the lang: the declaration, the entry, the
-# modules.  Not the suite, not the tooling, not CI.
-PAYLOAD := lang.xon run.x sql
+# What a consumer needs to run the lang: the declaration and the modules,
+# the entry among them.  Not the suite, not the tooling, not CI.
+PAYLOAD := bundle.xon lib
 
 .PHONY: install
-install: ## Install into <share>/langs/sql
+install: ## Install into <share>/bundles/sql
 	@test -n "$(SHARE)" || { echo "x-sql: cannot find an x tree -- set PREFIX or X" >&2; exit 1; }
 	@test -d "$(SHARE)" || { echo "x-sql: no x tree at $(SHARE)" >&2; exit 1; }
 	rm -rf "$(DEST)"

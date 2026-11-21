@@ -1,4 +1,4 @@
-Statement text to tokens (`sql/lex.x`).  `sql-lex` keeps every byte, which
+Statement text to tokens (`lib/sql/lex.x`).  `sql-lex` keeps every byte, which
 is what a painter colours; `sql-tokenize` is what the parser reads.
 
 ## lex raw

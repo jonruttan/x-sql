@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/number.x -- doubles and decimals, exactly
+; ## lib/sql/number.x -- doubles and decimals, exactly
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

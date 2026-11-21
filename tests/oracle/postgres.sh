@@ -32,7 +32,7 @@ case "$X" in
 */*) X_HOME="$(cd "$(dirname "$X")" && pwd)" ;;
 *) X_HOME="$PWD" ;;
 esac
-LANGS="${X_LANG_DIR:-$(cd "$BUNDLE/.." && pwd)}"
+LANGS="${X_BUNDLE_DIR:-$(cd "$BUNDLE/.." && pwd)}"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/x-sql-pg.XXXXXX")"
 PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -78,7 +78,7 @@ SQL
 check() {
 	name="$1"; wanted="$2"; url="$3"; shift 3
 	set -- "$url" "$@"
-	got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -- "$@" 2>&1 </dev/null)" || true
+	got="$(cd "$X_HOME" && X_BUNDLE_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -- "$@" 2>&1 </dev/null)" || true
 	case "$got" in
 	*"$wanted"*) echo "ok   $name" ;;
 	*) echo "FAIL $name"; echo "  wanted: $wanted"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
@@ -125,14 +125,14 @@ check "verify-full refuses a certificate the server signed for itself" "Tls13: X
 # statement in it may span lines.
 printf '%s\n' "CREATE TEMP TABLE f (a int);" "INSERT INTO f" "  VALUES (4), (5);" \
 	"SELECT max(a) AS top FROM f;" > "$WORK/program.sql"
-got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -f "$WORK/program.sql" -- "postgres://trusted@$AT" 2>&1 </dev/null)" || true
+got="$(cd "$X_HOME" && X_BUNDLE_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -f "$WORK/program.sql" -- "postgres://trusted@$AT" 2>&1 </dev/null)" || true
 case "$got" in
 *"│   5 │"*) echo "ok   a file of statements" ;;
 *) echo "FAIL a file of statements"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
 esac
 
 # The same statements piped in.
-got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -- "postgres://trusted@$AT" 2>&1 <"$WORK/program.sql")" || true
+got="$(cd "$X_HOME" && X_BUNDLE_DIR="$LANGS" NO_COLOR=1 "$X" -q -l sql -- "postgres://trusted@$AT" 2>&1 <"$WORK/program.sql")" || true
 case "$got" in
 *"│   5 │"*) echo "ok   statements piped in" ;;
 *) echo "FAIL statements piped in"; echo "$got" | sed 's/^/  got:    /'; FAILED=1 ;;
@@ -141,7 +141,7 @@ esac
 # A URL with no -c leaves the session on its server and the prompt
 # follows.  The prompt reads a terminal, so the line is typed at one; it
 # asks what only the server answers.
-got="$(cd "$X_HOME" && X_LANG_DIR="$LANGS" NO_COLOR=1 X_HISTORY= python3 -c '
+got="$(cd "$X_HOME" && X_BUNDLE_DIR="$LANGS" NO_COLOR=1 X_HISTORY= python3 -c '
 import os, pty, select, sys, time
 pid, fd = pty.fork()
 if pid == 0:

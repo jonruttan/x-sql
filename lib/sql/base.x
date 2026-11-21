@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/base.x -- text in, tables out, here or at a server
+; ## lib/sql/base.x -- text in, tables out, here or at a server
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

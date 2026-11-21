@@ -1,4 +1,4 @@
-MySQL's wire protocol (`sql/my.x`), which MariaDB also speaks, with no
+MySQL's wire protocol (`lib/sql/my.x`), which MariaDB also speaks, with no
 server: `canned-link` is the harness's link whose server is the bytes a
 case spells in hex, and which shows what is sent to it, a write a line
 after `sent`.  The bytes on both sides, and the digests, were worked out

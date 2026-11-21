@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/parse.x -- tokens to statements
+; ## lib/sql/parse.x -- tokens to statements
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

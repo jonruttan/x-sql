@@ -1,4 +1,4 @@
-What the prompt does with a line (`sql/repl.x`).  The line editor reads
+What the prompt does with a line (`lib/sql/repl.x`).  The line editor reads
 the line and hands it to `sql-eval-line`; a statement that does not end on
 its first line asks the editor for more, which no case here does.
 
