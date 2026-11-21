@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/files.x -- a CSV or JSON file as a table, and a table as a file
+; ## lib/sql/files.x -- a CSV or JSON file as a table, and a table as a file
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

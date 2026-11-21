@@ -1,4 +1,4 @@
-A join by key (`sql/exec.x`): when its condition has an equality of the
+A join by key (`lib/sql/exec.x`): when its condition has an equality of the
 two sides in it, the right's rows are held by that value and each left
 row is tried beside the ones of its own.  The answer is the one every
 pair tried would give; the cases here are where the two could differ.

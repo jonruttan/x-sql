@@ -1,5 +1,5 @@
 A program: a file's lines run as `x -l sql -f FILE` runs them
-(`sql-program` in `sql/repl.x`).  The cases hand the lines over from a
+(`sql-program` in `lib/sql/repl.x`).  The cases hand the lines over from a
 list; the entry hands them over from standard input, where x.sh puts the
 file.  DuckDB's `-f` is the model: statements in order, and the first one
 that fails ends the run.  Statements piped in are read the same way and

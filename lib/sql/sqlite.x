@@ -1,6 +1,6 @@
 ; # x-sql -- SQL on x-lang
 ;
-; ## sql/sqlite.x -- a table of a SQLite database file
+; ## lib/sql/sqlite.x -- a table of a SQLite database file
 ;
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan

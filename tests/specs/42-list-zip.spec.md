@@ -1,5 +1,5 @@
 Tuples, the structs whose fields have no names, and list_zip, which
-answers a list of them (`sql/eval.x`).
+answers a list of them (`lib/sql/eval.x`).
 
 Expected output is DuckDB 2.0.0's own, taken from `duckdb -no-agent -c`, unless a case says otherwise.
 

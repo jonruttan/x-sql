@@ -1,6 +1,6 @@
-; lang.xon -- what this bundle is.
+; bundle.xon -- what this bundle is.
 
-(lang "sql")
+(name "sql")
 
 ; Self-contained: this bundle depends on nothing but the platform.
 ;
@@ -9,9 +9,10 @@
 ; machine word is a HUGEINT, not a wrapped number.
 (dialect he)
 
-(requires-release "v0.59.0")
+(requires-release "v0.60.0")
 
-(entry "run.x")
+; `x -l sql` boots the module sql/run.
+(entry run)
 
 ; The SQL grammar, for any process that colours a file: sql/syntax imports
 ; x-lang libraries and sql/words only.
