@@ -250,14 +250,22 @@
 (def %sql-json-word (list (pair 48 57) (pair 65 90) (pair 97 122) 43 45 46))
 
 ; JSON's tokens: a string with its escapes, the six marks, and a number or
-; a word
+; a word.  The lexer is made when a JSON text is first read, so a session
+; that reads none makes no lexer, and an image written before one is read
+; has none to make again when it loads.
+(def %sql-json-held (Dict make))
+
 (def %sql-json-lexer
-  (Lexer make
-    (list (Lexer skip " \t\r\n")
-          (Lexer quoted (lit str) 34 34 92)
-          (Lexer table (lit mark) (list "{" "}" "[" "]" ":" ","))
-          (Lexer run (lit word) %sql-json-word %sql-json-word)
-          (Lexer any (lit other)))))
+  (fn (_)
+    (unless (%sql-json-held has? (lit lexer))
+      (%sql-json-held set! (lit lexer)
+        (Lexer make
+          (list (Lexer skip " \t\r\n")
+                (Lexer quoted (lit str) 34 34 92)
+                (Lexer table (lit mark) (list "{" "}" "[" "]" ":" ","))
+                (Lexer run (lit word) %sql-json-word %sql-json-word)
+                (Lexer any (lit other))))))
+    (%sql-json-held get (lit lexer))))
 
 (def %sql-json-malformed
   (fn (_) (error "Invalid Input Error: Malformed JSON")))
@@ -330,7 +338,7 @@
 ; one after another, as a file of one a line has them
 (def %sql-json-objects
   (fn (_ text)
-    (let ((values (%sql-json-values (%sql-json-lexer read-str text) ())))
+    (let ((values (%sql-json-values ((%sql-json-lexer) read-str text) ())))
       (let ((objects (if (and (not (null? values)) (null? (rest values))
                               (%sql-json-array? (first values)))
                        (rest (first values))

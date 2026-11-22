@@ -17,6 +17,8 @@
 (import x/type/list)
 (import x/type/str)
 (import x/num/tower)
+(import x/num/bigint)
+(import x/type/convert)
 (import x/num/float)
 
 ; --- powers ------------------------------------------------------------------
@@ -297,12 +299,10 @@
 
 ; --- decimals ----------------------------------------------------------------
 
-; The digits of TEXT as an integer
+; The digits of TEXT as an integer, read by the bigint's own conversion
+; from text, a limb of digits at a time, and an INTEGER when it fits one
 (def %sql-digits
-  (fn (self text i n acc)
-    (if (>= i n) acc
-      (self text (+ i 1) n
-            (+ (* acc 10) (- (Char ->int (Str8 ref i text)) 48))))))
+  (fn (_ text) (Convert to text (Bigint type))))
 
 ; A number written with digits and at most one point as
 ; (SCALED WIDTH SCALE): SCALED the digits as one integer, WIDTH how many
@@ -313,7 +313,7 @@
       (let ((digits (if (null? at) text
                       (Str8 append (Str8 sub 0 at text)
                                    (Str8 sub (+ at 1) (Str8 length text) text)))))
-        (list (%sql-digits digits 0 (Str8 length digits) 0)
+        (list (%sql-digits digits)
               (Str8 length digits)
               (if (null? at) 0 (- (- (Str8 length text) at) 1)))))))
 

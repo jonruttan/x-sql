@@ -179,11 +179,9 @@
   (fn (_ text)
     (List second (List find (fn (_ row) (str=? (first row) text)) sql-binary-ops))))
 
+; The digits of TEXT as an integer
 (def %sql-digits
-  (fn (self text i n acc)
-    (if (>= i n) acc
-      (self text (+ i 1) n
-            (+ (* acc 10) (- (Char ->int (Str8 ref i text)) 48))))))
+  (fn (_ text) (first (sql-decimal-read text))))
 
 ; A col node: sql/eval's sql-column-node, made here so that this module
 ; reads nothing of the evaluator's
@@ -207,7 +205,7 @@
 (def %sql-number
   (fn (_ text kind)
     (match
-      ((= kind 1) (list (lit int) (%sql-digits text 0 (Str8 length text) 0)))
+      ((= kind 1) (list (lit int) (%sql-digits text)))
       ((= kind 2)
         (if (or (Str8 includes? "e" text) (Str8 includes? "E" text))
           (list (lit dbl) text)
@@ -262,8 +260,7 @@
                  (fn (_ ts)
                    (if (and (not (null? ts)) (eq? (first (first ts)) (lit num))
                             (= (List third (first ts)) 1))
-                     (pair (%sql-digits (List second (first ts)) 0
-                                        (Str8 length (List second (first ts))) 0)
+                     (pair (%sql-digits (List second (first ts)))
                            (rest ts))
                      (%sql-near ts)))
                  (rest ts))))

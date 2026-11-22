@@ -19,6 +19,14 @@ is what a painter colours; `sql-tokenize` is what the parser reads.
 ---
     (('id "SELECT") ('blank " ") ('num "1" 1) ('op ";") ('blank "\n  "))
 
+### a quote written twice is inside the literal
+
+```x
+(%seq (write (sql-lex "'it''s'")) (newline))
+```
+---
+    (('str "'it''s'"))
+
 ## lex tokens
 
 ### a reserved word is a keyword in any case, and blanks and comments are gone
@@ -36,6 +44,14 @@ is what a painter colours; `sql-tokenize` is what the parser reads.
 ```
 ---
     (('str "it's") ('str "a") ('str "b"))
+
+### a blank or a comment between two literals keeps them apart
+
+```x
+(%seq (write (sql-tokenize "'a''' 'b'/* c */'c'--d")) (newline))
+```
+---
+    (('str "a'") ('str "b") ('str "c"))
 
 ### a quoted identifier is never a keyword
 
