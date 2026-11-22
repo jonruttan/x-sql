@@ -319,25 +319,3 @@ DuckDB's own is an internal error; this is what x-sql says of any table there is
 ```output
 Catalog Error: Table with name nope does not exist!
 ```
-
-### a view is not read
-
-DuckDB runs the view with SQLite's own engine.
-
-```x
-(sql-files "FROM sqlite_scan('{F}shop.sqlite3', 'big_spenders')")
-```
----
-```output
-Not implemented Error: a view of a SQLite file
-```
-
-### columns with no declared type are DuckDB's BLOB, which is not built
-
-```x
-(sql-files "FROM sqlite_scan('{F}shop.sqlite3', 'loose')")
-```
----
-```output
-Not implemented Error: the type BLOB
-```

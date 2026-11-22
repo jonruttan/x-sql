@@ -24,7 +24,11 @@
 #   measurements  four hundred rows: an interior page above the leaves
 #   documents     a text too long for its page: overflow pages
 #   loose         columns with no declared type, values of every class
+#   files         a BLOB column: no bytes, a zero byte, bytes above 127,
+#                 a NULL, and a text and a number kept in it
 #   big_spenders  a view
+#   order_totals  a view that names its columns, over a join and groups
+#   shouted       a view of a view
 set -e
 
 cd "$(dirname "$0")"
@@ -122,7 +126,27 @@ INSERT INTO loose VALUES
   (0, 1), (-1, 127), (128, 32767), (32768, 8388607), (8388608, 2147483647),
   (2147483648, 140737488355327), (140737488355328, 9223372036854775807);
 
+CREATE TABLE files (
+  id INTEGER PRIMARY KEY,
+  name TEXT,
+  body BLOB
+);
+INSERT INTO files VALUES
+  (1, 'empty', x''),
+  (2, 'text', x'68656C6C6F'),
+  (3, 'bytes', x'00FF10275C22'),
+  (4, 'none', NULL),
+  (5, 'kept as text', 'plain'),
+  (6, 'kept as a number', 42);
+
 CREATE VIEW big_spenders AS SELECT name FROM customers WHERE balance > 100;
+CREATE VIEW order_totals (customer, orders, pieces) AS
+  SELECT c.name, count(DISTINCT o.id), sum(l.qty)
+  FROM customers c
+  JOIN orders o ON o.customer_id = c.id
+  JOIN order_lines l ON l.order_id = o.id
+  GROUP BY c.name;
+CREATE VIEW shouted AS SELECT upper(name) AS loud FROM big_spenders;
 SQL
 
 echo "$OUT: $(wc -c < "$OUT") bytes"

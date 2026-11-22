@@ -181,12 +181,15 @@ DuckDB reads such a table with sqlite_scan and not when the file is attached; th
 shop.big_spenders
 shop.customers
 shop.documents
+shop.files
 shop.loose
 shop.measurements
 shop.order_lines
+shop.order_totals
 shop.orders
 shop.products
 shop.shelves
+shop.shouted
 ```
 
 ### .schema database.table is its columns in the types they are read as
@@ -199,7 +202,7 @@ shop.shelves
 CREATE TABLE shop.customers(id BIGINT, name VARCHAR, email VARCHAR, joined DATE, vip BIGINT, balance DOUBLE);
 ```
 
-### a column DuckDB reads as a BLOB is shown as one, though its table is not read
+### a column with no declared type is a BLOB
 
 ```x
 (%seq (sql-files "DETACH DATABASE IF EXISTS shop; ATTACH '{F}shop.sqlite3' AS shop; DROP TABLE IF EXISTS vips") (sql-eval-line ".schema shop.loose"))

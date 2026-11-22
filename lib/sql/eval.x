@@ -100,6 +100,7 @@
         (list (lit timestamp) "TIMESTAMP" "timestamp")
         (list (lit timestamptz) "TIMESTAMP WITH TIME ZONE" "timestamp with time zone")
         (list (lit interval) "INTERVAL" "interval")
+        (list (lit blob) "BLOB" "blob")
         (list (lit null) "NULL" "\"null\"")))
 
 ; The row of ROWS whose first is KEY.  It is walked here, a row at a time:
@@ -338,6 +339,114 @@
 (def %sql-members
   (fn (_ v) (List map (fn (_ f e) (pair (List second f) e)) (rest (first v)) (rest v))))
 
+; --- BLOB ----------------------------------------------------------------------
+;
+; A BLOB's bytes are held as text of two hexadecimal digits a byte, the
+; letters in upper case.  Text of that form stands in the order the bytes
+; do and is equal just when they are, so a BLOB is ordered, grouped and
+; kept once as text is; and it holds a zero byte, which the platform's
+; text does not.
+
+(def %sql-hex-digits "0123456789ABCDEF")
+
+; The digits of every byte, 00 to FF, one after another
+(def %sql-hex-pairs
+  (Str8 join ""
+    (List flat-map
+      (fn (_ hi)
+        (List map
+          (fn (_ lo) (Str8 append (Str8 sub hi 1 %sql-hex-digits) (Str8 sub lo 1 %sql-hex-digits)))
+          (List range 0 16)))
+      (List range 0 16))))
+
+; The two digits of the byte B
+(def %sql-byte-hex (fn (_ b) (Str8 sub (* b 2) 2 %sql-hex-pairs)))
+
+; What the digit with the code C is worth; nil when C is no digit
+(def %sql-hex-value
+  (fn (_ c)
+    (match
+      ((and (>= c 48) (<= c 57)) (- c 48))
+      ((and (>= c 65) (<= c 70)) (- c 55))
+      ((and (>= c 97) (<= c 102)) (- c 87))
+      (#t ()))))
+
+; The byte of TEXT at I, 0 to 255
+(def %sql-octet
+  (fn (_ text i) (Num remainder (+ (Char ->int (Str8 ref i text)) 256) 256)))
+
+; The characters a BLOB is shown with as they are, from the space on
+(def %sql-blob-plain
+  " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
+
+; The code of the first of them, of the last, and of the three that are
+; shown by their digits all the same: the backslash and both quotes
+(def %sql-blob-first 32)
+(def %sql-blob-last 126)
+(def %sql-blob-escaped (list 92 39 34))
+
+; A BLOB as a result shows it: a plain character as it is, any other byte
+; as \x and its two digits
+(def %sql-blob-text
+  (fn (_ hex)
+    (Str8 join ""
+      (List map
+        (fn (_ i)
+          (let ((b (+ (* 16 (%sql-hex-value (%sql-octet hex (* i 2))))
+                      (%sql-hex-value (%sql-octet hex (+ (* i 2) 1))))))
+            (if (and (>= b %sql-blob-first) (<= b %sql-blob-last)
+                     (not (List includes? b %sql-blob-escaped)))
+              (Str8 sub (- b %sql-blob-first) 1 %sql-blob-plain)
+              (Str8 append "\\x" (%sql-byte-hex b)))))
+        (List range 0 (Num quotient (Str8 length hex) 2))))))
+
+; The BLOB every byte of TEXT is a byte of
+(def sql-text-blob
+  (fn (_ text)
+    (Str8 join ""
+      (List map (fn (_ i) (%sql-byte-hex (%sql-octet text i)))
+                (List range 0 (Str8 length text))))))
+
+; The BLOB of BYTES, a list of whole numbers 0 to 255
+(def sql-bytes-blob
+  (fn (_ bytes) (Str8 join "" (List map %sql-byte-hex bytes))))
+
+; The BLOB the text TEXT says: a character below 128 is its byte, and \x
+; with two digits the byte they say.  Anything else is DuckDB's error.
+(def %sql-blob-read
+  (fn (_ text)
+    (let ((n (Str8 length text))
+          (bad (fn (_ what)
+                 (error (Str8 append "Conversion Error: Invalid hex escape code encountered in string -> blob conversion of string \""
+                                     text "\": " what)))))
+      (let ((go (fn (self i parts)
+                  (if (>= i n) (Str8 join "" (List reverse parts))
+                    (let ((b (%sql-octet text i)))
+                      (match
+                        ((>= b 128)
+                          (error (Str8 append "Conversion Error: Invalid byte encountered in STRING -> BLOB conversion of string \""
+                                              text "\". All non-ascii characters must be escaped with hex codes (e.g. \\xAA)")))
+                        ((not (= b 92)) (self (+ i 1) (pair (%sql-byte-hex b) parts)))
+                        ((>= (+ i 3) n) (bad "unterminated escape code at end of blob"))
+                        (#t
+                          (let ((hi (%sql-hex-value (%sql-octet text (+ i 2))))
+                                (lo (%sql-hex-value (%sql-octet text (+ i 3)))))
+                            (if (or (not (= (%sql-octet text (+ i 1)) 120)) (null? hi) (null? lo))
+                              (bad (Str8 sub i 4 text))
+                              (self (+ i 4) (pair (%sql-byte-hex (+ (* 16 hi) lo)) parts)))))))))))
+        (go 0 ())))))
+
+; The BLOB the hexadecimal digits of TEXT say, a lone first digit a byte
+; of its own.  A character that is no digit is DuckDB's error.
+(def %sql-unhex
+  (fn (_ text)
+    (let ((whole (if (= (Num remainder (Str8 length text) 2) 0) text (Str8 append "0" text))))
+      (let ((bad (List find (fn (_ i) (null? (%sql-hex-value (%sql-octet whole i))))
+                            (List range 0 (Str8 length whole)))))
+        (if (null? bad) (Str8 upcase whole)
+          (error (Str8 append "Invalid Input Error: Invalid input for hex digit: "
+                              (Str8 sub bad 1 whole))))))))
+
 ; A value as a result shows it
 (def sql-value-text
   (fn (_ v)
@@ -366,6 +475,7 @@
         ((eq? t (lit timestamptz)) (%sql-zoned-text x (sql-zone-session)))
         ((eq? t (lit time)) (sql-clock-text x))
         ((eq? t (lit interval)) (sql-interval-text x))
+        ((eq? t (lit blob)) (%sql-blob-text x))
         ((%sql-decimal? t) (sql-decimal-text x (List second t) (List third t)))
         (#t (Str8 str x))))))
 
@@ -737,6 +847,11 @@
             (if (< mx my) -1 (if (= mx my) 0 1))))
         ((and (eq? ta (lit boolean)) (eq? tb (lit boolean)))
           (if (eq? x y) 0 (if y -1 1)))
+        ((and (eq? ta (lit blob)) (eq? tb (lit blob)))
+          (if (Str8 <? x y) -1 (if (Str8 =? x y) 0 1)))
+        ; Text beside a BLOB is read as one
+        ((and (eq? ta (lit blob)) (eq? tb (lit varchar))) (%sql-order a (%sql-as b ta)))
+        ((and (eq? ta (lit varchar)) (eq? tb (lit blob))) (%sql-order (%sql-as a tb) b))
         ((or (%sql-nested? ta) (%sql-nested? tb)) (%sql-nested-order a b))
         (#t
           (error (Str8 str "Not implemented Error: comparing "
@@ -788,6 +903,9 @@
           (pair (lit null) ()))
         ((or (%sql-list? (first a)) (%sql-list? (first b)))
           (%sql-lists-joined (list a b)))
+        ((and (eq? (first a) (lit blob)) (eq? (first b) (lit blob)))
+          (pair (lit blob)
+            (if (or (%sql-null? a) (%sql-null? b)) () (Str8 append (rest a) (rest b)))))
         (#t
           (pair (lit varchar)
             (if (or (%sql-null? a) (%sql-null? b)) ()
@@ -877,6 +995,12 @@
       (%sql-no-match name args))))
 
 (def %sql-any-null? (fn (_ args) (List any? %sql-null? args)))
+
+; The one argument of NAME, a BLOB, as its bytes; nil for a NULL
+(def %sql-blob-arg
+  (fn (_ name args)
+    (if (eq? (first (first args)) (lit blob)) (rest (first args))
+      (%sql-no-match name args))))
 
 ; A function of text answering text: NAME's ARGS checked, NULL for a NULL
 ; argument, else F of the argument texts
@@ -1801,6 +1925,32 @@
           (if (= (Str8 length (List second t)) 0) (first t)
             (Str8 replace (List second t) (List third t) (first t))))))
     (method length (self args node) (%sql-length "length" args))
+    ; How many bytes a BLOB has
+    (method octet_length (self args node)
+      (%sql-arity "octet_length" args (list 1))
+      (let ((b (%sql-blob-arg "octet_length" args)))
+        (pair (lit bigint) (if (null? b) () (Num quotient (Str8 length b) 2)))))
+    ; The bytes of a BLOB, or of text, as hexadecimal digits
+    (method hex (self args node)
+      (%sql-arity "hex" args (list 1))
+      (let ((a (first args)))
+        (match
+          ((eq? (first a) (lit blob)) (pair (lit varchar) (rest a)))
+          ((or (eq? (first a) (lit varchar)) (%sql-null-type? (first a)))
+            (pair (lit varchar) (if (%sql-null? a) () (sql-text-blob (rest a)))))
+          (#t (%sql-no-match "hex" args)))))
+    (method unhex (self args node)
+      (%sql-arity "unhex" args (list 1))
+      (%sql-texts "unhex" args)
+      (pair (lit blob)
+        (if (%sql-any-null? args) ()
+          (%sql-unhex (rest (first args))))))
+    (method from_hex (self args node) (SqlFunction unhex args node))
+    ; Text as the BLOB of its bytes
+    (method encode (self args node)
+      (%sql-arity "encode" args (list 1))
+      (%sql-texts "encode" args)
+      (pair (lit blob) (if (%sql-any-null? args) () (sql-text-blob (rest (first args))))))
     (method len (self args node) (%sql-length "len" args))
     (method array_length (self args node)
       (%sql-list-first "array_length" args)
@@ -3273,6 +3423,8 @@
 (def-class SqlCast ()
   (static
     (method varchar (self v t) (sql-value-text v))
+    (method blob (self v t)
+      (if (eq? (first v) (lit blob)) (rest v) (%sql-blob-read (rest v))))
     ; A column with no type, as a table made from a NULL constant has,
     ; holds only NULLs
     (method null (self v t)
@@ -3396,13 +3548,15 @@
 (def %sql-nested-kind (fn (_ t) (if (%sql-nested? t) (first t) ())))
 
 ; The x value of V as the type T holds it.  A list goes into a list and a
-; struct into a struct; text is what either shows.
+; struct into a struct; text is what either shows.  A BLOB is made of text
+; and of nothing else, and makes nothing else.
 (def sql-cast
   (fn (_ v t)
     (match
       ((%sql-null? v) ())
       ((and (not (eq? t (lit varchar))) (not (eq? (first v) (lit varchar)))
-            (not (eq? (%sql-nested-kind (first v)) (%sql-nested-kind t))))
+            (or (not (eq? (%sql-nested-kind (first v)) (%sql-nested-kind t)))
+                (not (eq? (eq? (first v) (lit blob)) (eq? t (lit blob))))))
         (error (Str8 str "Conversion Error: Unimplemented type for cast ("
                          (%sql-type-name (first v)) " -> " (%sql-type-name t) ")")))
       (#t ((class-static-ref SqlCast (if (pair? t) (first t) t)) SqlCast v t)))))
@@ -3429,4 +3583,5 @@
   sql-windowed? sql-scope-windowed sql-window-aggregate
   sql-truth sql-order sql-null? sql-value-text sql-type-heading
   sql-type-name sql-numeric-type? sql-pointed? sql-function-names
+  sql-text-blob sql-bytes-blob
   sql-swept-map sql-swept-map-over sql-swept-filter sql-swept-each sql-int-type?)

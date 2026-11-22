@@ -36,7 +36,9 @@ What is built:
   INTEGER, BIGINT, HUGEINT and UHUGEINT that holds it; DECIMAL, exact,
   a constant with a point taking the width and scale it is written with;
   DOUBLE and the 32-bit REAL, each shown in the fewest digits that read
-  back as it; VARCHAR; BOOLEAN; NULL.
+  back as it; VARCHAR; BOOLEAN; NULL; BLOB, bytes, written as text with
+  `\xFF` for a byte that is no plain character, with `octet_length`,
+  `hex`, `unhex` and `encode`.
 - **Dates and times.** DATE, TIME, TIMESTAMP to the microsecond, and
   INTERVAL. A date and a count of days, a moment and
   an interval, two moments apart; a month added keeps the day or takes
@@ -141,8 +143,8 @@ What is built:
   `DETACH shop`; `sqlite_scan('file.db', 'table')` is one table of such
   a file with nothing attached. Either way a table is read from the file's
   pages, its columns in DuckDB's types for their declared ones, a table
-  made `WITHOUT ROWID` from the index its rows are in; a view and a
-  column DuckDB reads as a BLOB are not read yet. `COPY table TO 'file'`, `COPY
+  made `WITHOUT ROWID` from the index its rows are in, and a view by
+  running the statement the file keeps for it. `COPY table TO 'file'`, `COPY
   (SELECT ...) TO 'file'` and `COPY table FROM 'file'`, as CSV or as
   JSON, an object a line, a list written as an array and a struct as an
   object; `COPY` takes `DELIMITER` (or `SEP`) and `NULLSTR` beside
@@ -208,7 +210,7 @@ What is built:
 - **Files.** `bundle.xon` declares the grammar, so x-lang's tools colour a
   `.sql` file with it.
 
-Anything else is refused by name (`Not implemented Error: the type BLOB`) and not
+Anything else is refused by name (`Not implemented Error: the type UUID`) and not
 answered differently.
 
 ## Planned

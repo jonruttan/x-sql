@@ -111,6 +111,8 @@
         (list "VARCHAR" (lit varchar) "VARCHAR") (list "CHAR" (lit varchar) "VARCHAR")
         (list "TEXT" (lit varchar) ()) (list "STRING" (lit varchar) ())
         (list "BPCHAR" (lit varchar) ())
+        (list "BLOB" (lit blob) "BLOB") (list "BYTEA" (lit blob) ())
+        (list "BINARY" (lit blob) ()) (list "VARBINARY" (lit blob) ())
         (list "BOOLEAN" (lit boolean) "BOOLEAN") (list "BOOL" (lit boolean) ())
         (list "LOGICAL" (lit boolean) ())
         (list "DOUBLE" (lit double) ()) (list "FLOAT8" (lit double) ())

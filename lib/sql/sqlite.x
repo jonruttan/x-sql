@@ -23,8 +23,11 @@
 ; INT a BIGINT, CHAR, CLOB or TEXT a VARCHAR, REAL, FLOA or DOUB a
 ; DOUBLE, TIME a TIMESTAMP, DATE a DATE, BOOL a BIGINT, DEC or NUM a
 ; DOUBLE, and anything else a VARCHAR.  A column with no declared type, or
-; a BLOB, is DuckDB's BLOB, which is not built: such a table is refused by
-; that name.
+; a BLOB, is a BLOB: a number or a text in it is the bytes it is written
+; with.
+;
+; A view is a statement the file keeps.  It is answered here as its text,
+; and run by what runs any statement, its tables the file's.
 ;
 ; A table made WITHOUT ROWID keeps its rows in the tree of an index, in the
 ; order of its key, each record with the key's columns first.
@@ -39,7 +42,7 @@
 (import x/core/doors char->int int& int+ int- int* int/ int< int= str-make str-byte-ref)
 (import sql/words sql-lower)
 (import sql/lex sql-lex)
-(import sql/eval sql-cast)
+(import sql/eval sql-cast sql-value-text sql-text-blob sql-bytes-blob)
 
 ; --- bytes -------------------------------------------------------------------
 ;
@@ -352,7 +355,8 @@
 (def %sq-int-sizes (list 0 1 2 3 4 6 8))
 
 ; The value of kind K at the front of BYTES, as (VALUE . REST).  A value
-; is nil for a NULL, or (int . N), (real . X), (text . TEXT) or (blob).
+; is nil for a NULL, or (int . N), (real . X), (text . TEXT) or (blob .
+; BYTES), the bytes a list.
 (def %sq-value
   (fn (_ k bytes)
     (match
@@ -366,7 +370,8 @@
       ((= k 8) (pair (pair (lit int) 0) bytes))
       ((= k 9) (pair (pair (lit int) 1) bytes))
       ((= (Num remainder k 2) 0)
-        (pair (list (lit blob)) (List drop (Num quotient (- k 12) 2) bytes)))
+        (let ((n (Num quotient (- k 12) 2)))
+          (pair (pair (lit blob) (List take n bytes)) (List drop n bytes))))
       (#t
         (let ((n (Num quotient (- k 13) 2)))
           (pair (pair (lit text) (if (= n 0) "" (bytes->str (List take n bytes))))
@@ -517,16 +522,24 @@
 
 ; --- reading -----------------------------------------------------------------
 
-; A record's value as one of sql/eval's of the type T
+; A record's value as one of sql/eval's of the type T.  In a BLOB column
+; a number is the bytes of its text and a text its own bytes; a BLOB in a
+; column of any other type is DuckDB's error.
 (def %sq-typed
   (fn (_ v t)
     (pair t
       (match
         ((null? v) ())
+        ((eq? t (lit blob))
+          (match
+            ((eq? (first v) (lit blob)) (sql-bytes-blob (rest v)))
+            ((eq? (first v) (lit int)) (sql-text-blob (sql-value-text (pair (lit bigint) (rest v)))))
+            ((eq? (first v) (lit real)) (sql-text-blob (sql-value-text (pair (lit double) (rest v)))))
+            (#t (sql-text-blob (rest v)))))
         ((eq? (first v) (lit int)) (sql-cast (pair (lit bigint) (rest v)) t))
         ((eq? (first v) (lit real)) (sql-cast (pair (lit double) (rest v)) t))
         ((eq? (first v) (lit text)) (sql-cast (pair (lit varchar) (rest v)) t))
-        (#t (error "Not implemented Error: the type BLOB"))))))
+        (#t (error "Mismatch Type Error: Invalid type in column: a BLOB in a column that is not one"))))))
 
 ; How many rows are read between sweeps of what reading them left behind:
 ; the platform sweeps when it is asked to, and a table of many rows is
@@ -585,12 +598,8 @@
     (let ((row (%sq-schema-row db name)))
       (when (null? row)
         (error (Str8 append "Catalog Error: Table with name " name " does not exist!")))
-      (when (str=? (rest (first row)) "view")
-        (error "Not implemented Error: a view of a SQLite file"))
       (let ((made (%sq-columns (rest (List ref 4 row)))))
         (let ((columns (first made)) (keys (List second made)))
-          (when (List any? (fn (_ c) (eq? (List second c) (lit blob))) columns)
-            (error "Not implemented Error: the type BLOB"))
           (list (List map first columns)
                 (List map (fn (_ c) (List second c)) columns)
                 (if (null? keys)
@@ -630,8 +639,7 @@
             (List map (fn (_ row) (%sq-record (rest row))) (%sq-rows db 1))))))))
 
 ; The columns of the table NAME of the SQLite file at PATH, each (NAME
-; TYPE), TYPE the symbol blob for one DuckDB reads as a BLOB; nil for a
-; view, whose columns its own statement says
+; TYPE); nil for a view, whose columns its own statement says
 (def sql-sqlite-columns
   (fn (_ path name)
     (%sq-with path
@@ -644,4 +652,52 @@
             (#t (List map (fn (_ c) (list (first c) (List second c)))
                           (first (%sq-columns (rest (List ref 4 row))))))))))))
 
-(provide sql/sqlite sql-sqlite-read sql-sqlite-tables sql-sqlite-columns)
+; The tokens of TOKENS after the first AS that is inside no parentheses;
+; nil when there is none
+(def %sq-after-as
+  (fn (_ tokens)
+    (let ((go (fn (self left depth)
+                (match
+                  ((null? left) ())
+                  ((and (= depth 0) (%sq-word? (first left) (list "as"))) (rest left))
+                  (#t
+                    (self (rest left)
+                          (match
+                            ((%sq-mark? (first left) "(") (+ depth 1))
+                            ((%sq-mark? (first left) ")") (- depth 1))
+                            (#t depth))))))))
+      (go tokens 0))))
+
+; The names a CREATE VIEW's TOKENS give its columns, in parentheses before
+; its AS; nil when it gives none
+(def %sq-view-names
+  (fn (_ tokens)
+    (let ((before (List take-while (fn (_ tok) (not (%sq-word? tok (list "as")))) tokens)))
+      (let ((listed (List drop-while (fn (_ tok) (not (%sq-mark? tok "("))) before)))
+        (if (null? listed) ()
+          (List map
+            (fn (_ part) (%sq-name (first part)))
+            (List reject null?
+              (List map
+                (fn (_ part)
+                  (List reject
+                    (fn (_ tok) (List includes? (first tok) (list (lit blank) (lit comment))))
+                    part))
+                (first (%sq-parts (rest listed)))))))))))
+
+; The view NAME of the SQLite file at PATH, as (NAMES SELECT SQL): the
+; names its statement gives its columns, nil when it gives none, the
+; statement it selects with, and the whole statement that made it.  Nil
+; when NAME is a table, or nothing the file has.
+(def sql-sqlite-view
+  (fn (_ path name)
+    (%sq-with path
+      (fn (_ db)
+        (let ((row (%sq-schema-row db name)))
+          (if (or (null? row) (not (str=? (rest (first row)) "view"))) ()
+            (let ((tokens (sql-lex (rest (List ref 4 row)))))
+              (list (%sq-view-names tokens)
+                    (Str8 join "" (List map %sq-text (%sq-after-as tokens)))
+                    (rest (List ref 4 row))))))))))
+
+(provide sql/sqlite sql-sqlite-read sql-sqlite-tables sql-sqlite-columns sql-sqlite-view)
