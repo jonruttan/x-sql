@@ -19,6 +19,22 @@ is what a painter colours; `sql-tokenize` is what the parser reads.
 ---
     (('id "SELECT") ('blank " ") ('num "1" 1) ('op ";") ('blank "\n  "))
 
+### a form feed is a blank, in the one run with the others
+
+```x
+(%seq (write (sql-lex (Str8 append "a" (Str8 append (Str8 make 1 (Char from-int 12)) " b")))) (newline))
+```
+---
+    (('id "a") ('blank "\x0c ") ('id "b"))
+
+### a word or a number that ends the text is a token
+
+```x
+(%seq (write (sql-lex "SELECT x1")) (write (sql-tokenize "SELECT 42")) (newline))
+```
+---
+    (('id "SELECT") ('blank " ") ('id "x1"))(('kw "SELECT") ('num "42" 1))
+
 ### a quote written twice is inside the literal
 
 ```x
