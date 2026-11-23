@@ -9,7 +9,7 @@
 ; machine word is a HUGEINT, not a wrapped number.
 (dialect he)
 
-(requires-release "v0.60.0")
+(requires-release "v0.61.0")
 
 ; `x -l sql` boots the module sql/run.
 (entry run)

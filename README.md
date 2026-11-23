@@ -26,7 +26,7 @@ here.
 
 ## Status
 
-Pre-release: no release has been cut. Paired with x-lang v0.60.0
+Pre-release: no release has been cut. Paired with x-lang v0.61.0
 (`bundle.xon` is the checkable row).
 
 What is built:
