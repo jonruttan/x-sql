@@ -30,19 +30,14 @@
 (import x/type/dict)
 (import sql/words sql-upper sql-reserved sql-ops)
 
-; The text the Lexer appends so the last token meets a delimiter: a form
-; feed, which the run of blanks leaves out, so a run at the end of the text
-; ends on it.  A form feed in the text is a blank all the same, by a rule of
-; its own.
-(def %sql-end (Str8 make 1 (Char from-int 12)))
-(def %sql-blanks (list 32 9 13 10))
+; space, tab, carriage return, newline and form feed
+(def %sql-blanks (list 32 9 13 10 12))
 (def %sql-name-start (list (pair 97 122) (pair 65 90) 95))
 (def %sql-name-rest (list (pair 97 122) (pair 65 90) (pair 48 57) 95 36))
 
 (def sql-lexer-rules
   (fn (_)
     (list (Lexer run (lit blank) %sql-blanks %sql-blanks)
-          (Lexer table (lit blank) (list %sql-end))
           (Lexer until (lit comment) "--" "\n" (lit to-end))
           (Lexer until (lit comment) "/*" "*/")
           (Lexer quoted (lit str) 39 39 39)
@@ -52,15 +47,15 @@
           (Lexer table (lit op) sql-ops)
           (Lexer any (lit bad)))))
 
-(def %sql-lexer (Lexer make (sql-lexer-rules) %sql-end))
+(def %sql-lexer (Lexer make (sql-lexer-rules)))
 
 (def sql-lex (fn (_ text) (%sql-lexer read-str text)))
 
 ; The parser's lexer: the same tokens with the blanks and the comments
-; dropped, the form feed the end text is among the blanks
+; dropped
 (def %sql-parse-lexer
   (Lexer make
-    (list (Lexer skip (pair 12 %sql-blanks))
+    (list (Lexer skip %sql-blanks)
           (Lexer until () "--" "\n" (lit to-end))
           (Lexer until () "/*" "*/")
           (Lexer quoted (lit str) 39 39 39)
@@ -68,8 +63,7 @@
           (Lexer run (lit id) %sql-name-start %sql-name-rest)
           (Lexer number (lit num) ())
           (Lexer table (lit op) sql-ops)
-          (Lexer any (lit bad)))
-    %sql-end))
+          (Lexer any (lit bad)))))
 
 ; A quoted literal without its two quotes, each QUOTE written TWICE inside
 ; it written once
