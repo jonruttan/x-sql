@@ -29,9 +29,9 @@
 (import sql/lex sql-lex)
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
 (import sql/base
-  sql-run sql-error-text sql-connect! sql-disconnect! sql-connection
+  sql-run sql-error-text sql-connect! sql-open! sql-disconnect! sql-connection
   sql-connection-secure?)
-(import sql/exec sql-table-names sql-table-columns sql-attached)
+(import sql/exec sql-table-names sql-table-columns sql-attached sql-opened)
 (import sql/sqlite sql-sqlite-tables sql-sqlite-columns sql-sqlite-view)
 (import sql/eval sql-type-name)
 (import sql/render sql-max-rows!)
@@ -202,7 +202,7 @@
           (sql-table-names))))))
 
 (def %sql-dot-names
-  (list ".connect" ".disconnect" ".exit" ".help" ".maxrows" ".quit" ".schema" ".tables"))
+  (list ".connect" ".disconnect" ".exit" ".help" ".maxrows" ".open" ".quit" ".schema" ".tables"))
 
 ; The seam the editor calls: the word before the cursor and the names it
 ; could become, sorted and each once.  A line that starts with a dot
@@ -292,14 +292,17 @@
                   ");")
                 (Str8 append (List third view) ";")))))))))
 
-; The prompt says where statements go: sql> here, and a server's database
-; and host when there is one
+; The prompt says where statements go: sql> here, the name of the file the
+; session is opened on when there is one, and a server's database and host
+; when there is one
 (def %sql-prompt!
   (fn (_)
     (Lang register! "sql"
       (list (pair (lit %repl-prompt)
-                  (if (null? (sql-connection)) "sql> "
-                    (Str8 append (sql-connection) "> ")))))
+                  (match
+                    ((not (null? (sql-connection))) (Str8 append (sql-connection) "> "))
+                    ((not (null? (sql-opened))) (Str8 append (first (sql-opened)) "> "))
+                    (#t "sql> ")))))
     (when (str=? (Lang current) "sql") (Lang use! "sql"))))
 
 ; A command is a static method named for it, taking what follows it on the
@@ -316,6 +319,12 @@
     (method disconnect (self rest-of-line)
       (sql-disconnect!)
       (%sql-prompt!))
+    ; A SQLite file's tables read by their names from here on
+    (method open (self rest-of-line)
+      (if (= (Str8 length rest-of-line) 0)
+        (do (display "usage: .open FILE, a SQLite database file") (newline))
+        (do (display (Str8 append "opened " (sql-open! rest-of-line))) (newline)
+            (%sql-prompt!))))
     ; The most rows of a result that are shown, DuckDB's command for it
     (method maxrows (self rest-of-line)
       (let ((tokens (sql-lex rest-of-line)))
