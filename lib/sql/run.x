@@ -18,6 +18,12 @@
 ; main starts it.
 
 (module sql/run)
+; The platform's compiled tokenizer analysers, before any of this bundle's
+; text is read.  The reader runs its analysers on every character; helium
+; runs them interpreted, and x/boot/tower-compiled compiles them, with the
+; numeric tower's, which this bundle loads in any case.  Read through them
+; the bundle's source allocates about a fifth of what it did.
+(import x/boot/tower-compiled)
 (import sql/base sql-version sql-main)
 (import sql/repl sql-leads? sql-repl-register! sql-program-main
   sql-piped? sql-piped-main)

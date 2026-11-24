@@ -8,6 +8,9 @@
 ;
 ; The bundle kit's generator writes tests/lib/harness.gen.x: the dialect
 ; bundle.xon declares, the bundle's root on the import path, then this file.
+; The compiled tokenizer analysers first, as lib/sql/run.x loads them, so the
+; bundle's modules are read through them here too.
+(import x/boot/tower-compiled)
 (import sql/lex sql-lex sql-tokenize)
 (import sql/parse sql-parse)
 (import sql/base sql-version sql-run)
