@@ -125,6 +125,25 @@
     (List sort (fn (_ a b) (Str8 <? (sql-lower (first a)) (sql-lower (first b))))
       (List map (fn (_ key) (%sql-attached get key)) (%sql-attached keys)))))
 
+; --- the file a session is opened on ------------------------------------------
+
+; A SQLite file a session is opened on, (NAME PATH): attached under its own
+; name without its directories and its ending, and the file a bare table
+; name is looked for in when no table here has the name.  Nil with none.
+(def %sql-opened (Dict make))
+(def sql-opened (fn (_) (%sql-opened get-or () (lit file))))
+
+; The session is opened on the SQLite file at PATH from here on; answers
+; the name it is attached under.  The file is read here for its tables, so
+; one that is not there or is no SQLite file is refused.
+(def sql-open-file!
+  (fn (_ path)
+    (sql-sqlite-tables path)
+    (let ((name (sql-file-stem path)))
+      (%sql-attached set! (sql-lower name) (list name path))
+      (%sql-opened set! (lit file) (list name path))
+      name)))
+
 ; --- a SQLite file's views ----------------------------------------------------
 ;
 ; A view is a statement the file keeps, written for SQLite.  It is run
@@ -185,6 +204,10 @@
         (%sql-result-source (%sql-withs get (%sql-key name)) (if (null? alias) name alias)))
       ((and (not (null? (%sql-view-file))) (%sql-sqlite-has? (first (%sql-view-file)) name))
         (%sql-result-source (%sql-sqlite-result (first (%sql-view-file)) name)
+                            (if (null? alias) name alias)))
+      ((and (not (%sql-tables has? (%sql-key name))) (not (null? (sql-opened)))
+            (%sql-sqlite-has? (List second (sql-opened)) name))
+        (%sql-result-source (%sql-sqlite-result (List second (sql-opened)) name)
                             (if (null? alias) name alias)))
       (#t
         (let ((table (%sql-table name)))
@@ -1803,7 +1826,11 @@
     (method detach (self stmt)
       (let ((key (sql-lower (List second stmt))))
         (if (%sql-attached has? key)
-          (%sql-attached del! key)
+          (do (%sql-attached del! key)
+              ; the file the session was opened on, let go by its name
+              (when (and (not (null? (sql-opened)))
+                         (str=? (sql-lower (first (sql-opened))) key))
+                (%sql-opened del! (lit file))))
           (unless (List third stmt)
             (error (Str8 append "Binder Error: Failed to detach database with name \""
                                 (List second stmt) "\": database not found"))))
@@ -1911,4 +1938,5 @@
     (List for-each (fn (_ name) (%sql-withs del! name)) (%sql-withs keys))
     ((class-static-ref SqlStatement (first stmt)) SqlStatement stmt)))
 
-(provide sql/exec sql-execute sql-table-names sql-table-columns sql-attached)
+(provide sql/exec sql-execute sql-table-names sql-table-columns sql-attached
+  sql-opened sql-open-file!)

@@ -14,7 +14,7 @@
 (import x/type/list)
 (import x/type/str)
 (import sql/parse sql-parse)
-(import sql/exec sql-execute)
+(import sql/exec sql-execute sql-open-file!)
 (import x/repl/ansi)
 (import x/type/dict)
 (import sql/render sql-render sql-render-table sql-one-line-rows)
@@ -227,7 +227,28 @@
           (Str8 append (Ansi wrap (Ansi bold-red) (Str8 sub 0 (+ at 6) text))
                        (Str8 sub (+ at 6) (Str8 length text) text)))))))
 
-; The operands after `x -l sql --`: a server's URL, statements then
+; The file an operand names, or nil: a path, or a path after sqlite:// or
+; sqlite3://.  An operand that starts with a dash, or has another scheme,
+; names none.
+(def %sql-file-schemes (list "sqlite://" "sqlite3://"))
+(def sql-operand-file
+  (fn (_ op)
+    (let ((scheme (List find (fn (_ s) (Str8 starts? s op)) %sql-file-schemes)))
+      (match
+        ((not (null? scheme)) (Str8 sub (Str8 length scheme) (Str8 length op) op))
+        ((or (Str8 includes? "://" op) (Str8 starts? "-" op) (= (Str8 length op) 0)) ())
+        (#t op)))))
+
+; The session is opened on the SQLite file at PATH: statements go to the
+; engine here, and the file's tables are read by their names.  Answers the
+; name the file is attached under.
+(def sql-open!
+  (fn (_ path)
+    (sql-disconnect!)
+    (sql-open-file! path)))
+
+; The operands after `x -l sql --`: a SQLite file, its tables then read by
+; their names; a server's URL, statements then
 ; going to that server, and -c SQL, as often as wanted.  An error ends the
 ; run with status 1.  With a -c the run ends after the last operand; with
 ; none, a URL alone, the session stays on its server and the prompt follows.
@@ -240,6 +261,11 @@
           (guard (e (do (display (sql-error-text e)) (newline) (Sys exit 1)))
             (display (sql-run (List second ops))))
           (self (rest (rest ops)) #t)))
+      ((not (null? (sql-operand-file (first ops))))
+        (do
+          (guard (e (do (display (sql-error-text e)) (newline) (Sys exit 1)))
+            (sql-open! (sql-operand-file (first ops))))
+          (self (rest ops) ran)))
       ((Str8 includes? "://" (first ops))
         (do
           (guard (e (do (display (sql-error-text e)) (newline) (Sys exit 1)))
@@ -247,12 +273,12 @@
           (self (rest ops) ran)))
       (#t
         (do
-          (display "usage: x -l sql -- [postgres://|mysql://|mariadb://USER[:PASSWORD]@HOST[:PORT][/DATABASE]] [-c SQL]...\n")
+          (display "usage: x -l sql -- [FILE.sqlite3 | postgres://|mysql://|mariadb://USER[:PASSWORD]@HOST[:PORT][/DATABASE]] [-c SQL]...\n")
           (Sys exit 2))))))
 
 (def sql-main (fn (_ ops) (%sql-operands ops #f)))
 
 (provide sql/base
-  sql-version sql-run sql-error-text sql-main sql-url-parse sql-connect!
+  sql-version sql-run sql-error-text sql-main sql-url-parse sql-connect! sql-open! sql-operand-file
   sql-disconnect! sql-connection sql-connection-secure? sql-remote-text
   sql-pg-results)
