@@ -65,46 +65,55 @@
           (Lexer table (lit op) sql-ops)
           (Lexer any (lit bad)))))
 
-; A quoted literal without its two quotes, each quote written twice inside
+; A quoted literal without its two quotes, each QUOTE written TWICE inside
 ; it written once
 (def %sql-unquote
-  (fn (_ text quote)
-    (let ((inner (Str8 sub 1 (- (Str8 length text) 2) text))
-          (twice (Str8 append quote quote)))
+  (fn (_ text quote twice)
+    (let ((inner (Str8 sub 1 (- (Str8 length text) 2) text)))
       (if (Str8 includes? twice inner)
         (Str8 join quote (Str8 split twice inner))
         inner))))
 
-; A word as written to its token, each distinct spelling worked out once
+; A word as written to its token, each distinct spelling worked out once.
+; One get a word: a spelling met before is a hit, and only a miss works the
+; token out and stores it.
 (def %sql-words (Dict make))
 
 (def %sql-word
   (fn (_ text)
-    (unless (%sql-words has? text)
-      (%sql-words set! text
+    (let ((known (%sql-words get text)))
+      (if (null? known)
         (let ((up (sql-upper text)))
-          (if (List includes? up sql-reserved)
-            (list (lit kw) up)
-            (list (lit id) text)))))
-    (%sql-words get text)))
+          (let ((tok (if (List includes? up sql-reserved)
+                       (list (lit kw) up)
+                       (list (lit id) text))))
+            (%sql-words set! text tok)
+            tok))
+        known))))
 
-; One raw token to the parser's
+; RAW's tokens to the parser's, onto ACC newest first; the text of a token is
+; the head of its rest
 (def %sql-cook
-  (fn (_ tok)
-    (let ((tag (first tok)) (text (List second tok)))
-      (match
-        ((eq? tag (lit id)) (%sql-word text))
-        ((eq? tag (lit str)) (list tag (%sql-unquote text "'")))
-        ((eq? tag (lit qid)) (list tag (%sql-unquote text "\"")))
-        ((eq? tag (lit bad))
-          (error
-            (match
-              ((str=? text "'") "Parser Error: unterminated string literal")
-              ((str=? text "\"") "Parser Error: unterminated quoted identifier")
-              (#t (Str8 str "Parser Error: syntax error at or near \"" text "\"")))))
-        (#t tok)))))
+  (fn (self raw acc)
+    (if (null? raw) (List reverse acc)
+      (let ((tok (first raw)))
+        (let ((tag (first tok)) (text (first (rest tok))))
+          (self (rest raw)
+            (pair
+              (match
+                ((eq? tag (lit id)) (%sql-word text))
+                ((eq? tag (lit str)) (list tag (%sql-unquote text "'" "''")))
+                ((eq? tag (lit qid)) (list tag (%sql-unquote text "\"" "\"\"")))
+                ((eq? tag (lit bad))
+                  (error
+                    (match
+                      ((str=? text "'") "Parser Error: unterminated string literal")
+                      ((str=? text "\"") "Parser Error: unterminated quoted identifier")
+                      (#t (Str8 str "Parser Error: syntax error at or near \"" text "\"")))))
+                (#t tok))
+              acc)))))))
 
 (def sql-tokenize
-  (fn (_ text) (List map %sql-cook (%sql-parse-lexer read-str text))))
+  (fn (_ text) (%sql-cook (%sql-parse-lexer read-str text) ())))
 
 (provide sql/lex sql-lexer-rules sql-lex sql-tokenize)
