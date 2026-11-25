@@ -4,10 +4,11 @@
 
 ; Self-contained: this bundle depends on nothing but the platform.
 ;
-; Helium, plus exactly the libraries this bundle imports and nothing
-; ambient.  The numeric tower is one of them: an integer wider than a
-; machine word is a HUGEINT, not a wrapped number.
-(dialect he)
+; Neon: helium with the compiler and the Lexer, so this bundle's own source
+; is tokenized through native code from its first byte, and no syntax or
+; library it did not ask for.  The numeric tower is an import: an integer
+; wider than a machine word is a HUGEINT, not a wrapped number.
+(dialect ne)
 
 (requires-release "v0.62.0")
 
