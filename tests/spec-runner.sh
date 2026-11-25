@@ -53,10 +53,10 @@ if [ "${IMG:-1}" = 0 ]; then
 	SPEC_BATCH="${SPEC_BATCH:-1}"; export SPEC_BATCH
 else
 	_builder="$X_ROOT/tools/dev/image-build.sh"
+	X_IMG_WHO=1; export X_IMG_WHO # TEMPORARY: name the holder of the unnameable pointer on x86-64
 	if [ ! -f "$_builder" ]; then
 		echo "x-sql: no image writer at $_builder (not a checkout) -- the suite boots from source" >&2
 	elif X_BIN="$X_BIN" sh "$_builder" "$LANG_LIB" "$BUNDLE/tests/lib/.images" "$BUNDLE/lib/sql"; then
-		X_IMG_WHO=1; export X_IMG_WHO # TEMPORARY: name the holder of the unnameable pointer on x86-64
 		X_IMG_DIR="$BUNDLE/tests/lib/.images"; export X_IMG_DIR
 	else
 		echo "x-sql: no state image -- the suite boots from source" >&2
