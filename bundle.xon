@@ -10,7 +10,7 @@
 ; wider than a machine word is a HUGEINT, not a wrapped number.
 (dialect ne)
 
-(requires-release "v0.62.0")
+(requires-release "v0.63.0")
 
 ; `x -l sql` boots the module sql/run.
 (entry run)
