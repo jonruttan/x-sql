@@ -7,10 +7,6 @@
 ; @license MIT No Attribution (MIT-0)
 
 (module sql/base)
-; The function compiler, for the library's compiled loops: loading it
-; compiles Hash fnv-1a's byte loop, which every Dict lookup on a string key
-; runs.  The tower dialects load it at boot and helium does not.
-(import x/tool/fn-compile)
 (import x/type/list)
 (import x/type/str)
 (import sql/parse sql-parse)
