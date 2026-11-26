@@ -260,37 +260,71 @@
                ");"))
     (newline)))
 
-; The tables of the databases attached, each database.table, the
-; databases in the order of their names and each one's tables in theirs
+; Whether TABLE of the attached database DB is read by its bare name: DB is
+; the file the session is opened on, and the session has made no table of
+; that name, which would be read first
+(def %sql-bare?
+  (fn (_ db table)
+    (and (not (null? (sql-opened)))
+         (str=? (sql-lower (first db)) (sql-lower (first (sql-opened))))
+         (null? (List find (fn (_ own) (str=? (sql-lower own) (sql-lower table)))
+                  (sql-table-names))))))
+
+; The tables of the databases attached, the databases in the order of
+; their names and each one's tables in theirs.  A table is written as a
+; statement reads it: database.table, and the bare name for a table of
+; the file the session is opened on
 (def %sql-attached-tables
   (fn (_)
     (List flat-map
       (fn (_ db)
-        (List map (fn (_ table) (Str8 append (first db) "." table))
+        (List map
+          (fn (_ table)
+            (if (%sql-bare? db table) table (Str8 append (first db) "." table)))
           (List sort (fn (_ a b) (Str8 <? a b)) (sql-sqlite-tables (List second db)))))
       (sql-attached))))
 
-; A table of an attached database, NAME written database.table, as the
-; statement that would make it; nil when NAME names no attached database.
+; The attached database NAME names a table of and that table, (DB TABLE):
+; NAME is database.table, or the bare name of a table of the file the
+; session is opened on.  Nil when it names neither.
+(def %sql-attached-named
+  (fn (_ name)
+    (let ((at (Str8 index-of "." name)))
+      (if (null? at)
+        (let ((db (if (null? (sql-opened)) ()
+                    (List find
+                      (fn (_ d) (str=? (sql-lower (first d)) (sql-lower (first (sql-opened)))))
+                      (sql-attached)))))
+          (if (null? db) ()
+            (let ((table (List find (fn (_ t) (str=? (sql-lower t) (sql-lower name)))
+                           (sql-sqlite-tables (List second db)))))
+              (if (or (null? table) (not (%sql-bare? db table))) ()
+                (list db table)))))
+        (let ((db (List find
+                    (fn (_ d) (str=? (sql-lower (first d)) (sql-lower (Str8 sub 0 at name))))
+                    (sql-attached))))
+          (if (null? db) ()
+            (list db (Str8 sub (+ at 1) (Str8 length name) name))))))))
+
+; A table of an attached database as the statement that would make it,
+; under NAME as it was written; nil when NAME names no attached table.
 ; A view is shown as the statement the file keeps for it.
 (def %sql-attached-schema
   (fn (_ name)
-    (let ((at (Str8 index-of "." name)))
-      (let ((db (if (null? at) ()
-                  (List find
-                    (fn (_ d) (str=? (sql-lower (first d)) (sql-lower (Str8 sub 0 at name))))
-                    (sql-attached)))))
-        (if (null? db) ()
-          (let ((table (Str8 sub (+ at 1) (Str8 length name) name)))
-            (let ((view (sql-sqlite-view (List second db) table)))
-              (if (null? view)
-                (Str8 append "CREATE TABLE " (first db) "." table "("
-                  (Str8 join ", "
-                    (List map
-                      (fn (_ c) (Str8 append (first c) " " (sql-type-name (List second c))))
-                      (sql-sqlite-columns (List second db) table)))
-                  ");")
-                (Str8 append (List third view) ";")))))))))
+    (let ((found (%sql-attached-named name)))
+      (if (null? found) ()
+        (let ((db (first found)) (table (List second found)))
+          (let ((view (sql-sqlite-view (List second db) table)))
+            (if (null? view)
+              (Str8 append "CREATE TABLE "
+                (if (null? (Str8 index-of "." name)) table (Str8 append (first db) "." table))
+                "("
+                (Str8 join ", "
+                  (List map
+                    (fn (_ c) (Str8 append (first c) " " (sql-type-name (List second c))))
+                    (sql-sqlite-columns (List second db) table)))
+                ");")
+              (Str8 append (List third view) ";"))))))))
 
 ; The prompt says where statements go: sql> here, the name of the file the
 ; session is opened on when there is one, and a server's database and host
