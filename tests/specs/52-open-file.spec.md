@@ -100,6 +100,69 @@ SQLite one.
 └─────────┘
 ```
 
+### .tables lists the file's tables by the bare names a statement reads them by
+
+```x
+(sql-eval-line ".tables")
+```
+---
+```output
+big_spenders
+customers
+documents
+files
+loose
+measurements
+order_lines
+order_totals
+orders
+products
+shelves
+shouted
+```
+
+### .schema takes a bare name, and shows the table under it
+
+```x
+(sql-eval-line ".schema customers")
+```
+---
+```output
+CREATE TABLE customers(id BIGINT, name VARCHAR, email VARCHAR, joined DATE, vip BIGINT, balance DOUBLE);
+```
+
+### and the file's name before it, as written
+
+```x
+(sql-eval-line ".schema shop.customers")
+```
+---
+```output
+CREATE TABLE shop.customers(id BIGINT, name VARCHAR, email VARCHAR, joined DATE, vip BIGINT, balance DOUBLE);
+```
+
+### a table made in the session keeps the bare name, and the file's is listed under the file's
+
+```x
+(%seq (sql "CREATE OR REPLACE TABLE customers AS SELECT 'here' AS name") (sql-eval-line ".tables") (sql "DROP TABLE customers"))
+```
+---
+```output
+customers
+big_spenders
+shop.customers
+documents
+files
+loose
+measurements
+order_lines
+order_totals
+orders
+products
+shelves
+shouted
+```
+
 ### a name the file has no table for is refused as any other
 
 ```x

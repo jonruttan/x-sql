@@ -146,8 +146,8 @@ What is built:
   a file with nothing attached. A session opened on a file, by `x -l sql --
   file.db` (or `sqlite://file.db`, `sqlite3://file.db`) or by `.open
   file.db` at the prompt, has it attached under its own name and reads its
-  tables by their bare names too; a table made in the session with the
-  same name is read first. Either way a table is read from the file's
+  tables by their bare names too, which is how `.tables` and `.schema`
+  show them; a table made in the session with the same name is read first. Either way a table is read from the file's
   pages, its columns in DuckDB's types for their declared ones, a table
   made `WITHOUT ROWID` from the index its rows are in, and a view by
   running the statement the file keeps for it. `COPY table TO 'file'`, `COPY
