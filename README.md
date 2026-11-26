@@ -235,6 +235,10 @@ In this order:
 
     make test       # the spec suite
     make check      # the suite against tests/contract/known-failures.txt
+    make card       # docs/card.md: its format, its rows and its programs
+
+[docs/card.md](docs/card.md) is the card: the command line and SQL as
+x-sql takes it, in tables and programs that `make card` runs.
 
 The specs under `tests/specs/` take their expected output from DuckDB
 itself (`duckdb -no-agent -c`), version 2.0.0, except where a case says
