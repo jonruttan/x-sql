@@ -149,10 +149,40 @@
                 (List ref 3 result))))
       results)))
 
+; A name as a string of the server's SQL, a quote in it doubled
+(def %sql-quoted
+  (fn (_ name) (Str8 append "'" (Str8 join "''" (Str8 split "'" name)) "'")))
+
+; The rows of the first result of RESULTS that has any columns, each a
+; list of its values as text; ROWS-AT is where a result keeps its rows
+(def %sql-result-rows
+  (fn (_ results rows-at)
+    (let ((result (List find (fn (_ r) (and (not (str? r)) (not (null? (first r))))) results)))
+      (if (null? result) ()
+        (List map (fn (_ row) (List map first row)) (List ref rows-at result))))))
+
+; What a server is asked for its catalogue: the tables a bare name reaches,
+; and a function of a table's name answering the question for its columns,
+; each a name and the server's own word for its type, in the table's order
+(def %sql-pg-tables
+  "SELECT table_name FROM information_schema.tables WHERE table_schema = ANY (current_schemas(false)) ORDER BY table_name")
+(def %sql-pg-columns
+  (fn (_ table)
+    (Str8 append "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ANY (current_schemas(false)) AND table_name = "
+                 (%sql-quoted table) " ORDER BY ordinal_position")))
+(def %sql-my-tables
+  "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name")
+(def %sql-my-columns
+  (fn (_ table)
+    (Str8 append "SELECT column_name, column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = "
+                 (%sql-quoted table) " ORDER BY ordinal_position")))
+
 ; A session with a kind of server: a static method named for the URL's
-; scheme, taking a link and the address, and answering (RUN FINISH SECURE):
-; a function of a text that answers its results as text, a function of
-; nothing that ends the session, and whether the session is encrypted
+; scheme, taking a link and the address, and answering (RUN FINISH SECURE
+; ROWS TABLES COLUMNS): a function of a text that answers its results as
+; text, a function of nothing that ends the session, whether the session is
+; encrypted, a function of a text that answers the rows of its first
+; result, and the two questions of the server's catalogue
 (def-class SqlServer ()
   (static
     (method postgres (self link at)
@@ -160,14 +190,18 @@
                 (List ref 6 at) (List third at))
       (list (fn (_ text) (sql-remote-text (sql-pg-results (pg-query link text))))
             (fn (_) (pg-finish link) (link close!))
-            (link secure)))
+            (link secure)
+            (fn (_ text) (%sql-result-rows (pg-query link text) 2))
+            %sql-pg-tables %sql-pg-columns))
     (method postgresql (self link at) (SqlServer postgres link at))
     (method mysql (self link at)
       (my-start link (first at) (List second at) (List ref 4 at)
                 (List ref 6 at) (List third at))
       (list (fn (_ text) (sql-remote-text (my-query link text)))
             (fn (_) (my-finish link) (link close!))
-            (link secure)))
+            (link secure)
+            (fn (_ text) (%sql-result-rows (my-query link text) 3))
+            %sql-my-tables %sql-my-columns))
     (method mariadb (self link at) (SqlServer mysql link at))))
 
 (def sql-disconnect!
@@ -175,8 +209,45 @@
     (when (%sql-session has? (lit finish))
       ((%sql-session get (lit finish))))
     (List for-each (fn (_ key) (%sql-session del! key))
-                   (list (lit run) (lit finish) (lit name) (lit secure)))
+                   (list (lit run) (lit finish) (lit name) (lit secure)
+                         (lit rows) (lit tables) (lit columns) (lit listed)))
     ()))
+
+; The session is with the server of KIND, a URL's scheme, reached by LINK
+; at the address AT, as sql-url-parse answers one.  Answers its name: the
+; database at the host, or the host alone.
+(def sql-session!
+  (fn (_ kind link at)
+    (sql-disconnect!)
+    (let ((session ((class-static-ref SqlServer (Str8 ->sym kind)) SqlServer link at)))
+      (%sql-session set! (lit run) (first session))
+      (%sql-session set! (lit finish) (List second session))
+      (%sql-session set! (lit secure) (List third session))
+      (%sql-session set! (lit rows) (List ref 3 session))
+      (%sql-session set! (lit tables) (List ref 4 session))
+      (%sql-session set! (lit columns) (List ref 5 session))
+      (%sql-session set! (lit name)
+        (if (null? (List ref 4 at)) (List third at)
+          (Str8 append (List ref 4 at) "@" (List third at))))
+      (sql-connection))))
+
+; The server's tables, the ones a bare name reaches, in the order of
+; their names; nil with no server.  The server is asked once and the
+; answer kept until a statement goes to it, since Tab asks at every press.
+(def sql-server-tables
+  (fn (_)
+    (if (not (%sql-session has? (lit rows))) ()
+      (do (unless (%sql-session has? (lit listed))
+            (%sql-session set! (lit listed)
+              (List map first ((%sql-session get (lit rows)) (%sql-session get (lit tables))))))
+          (%sql-session get (lit listed))))))
+
+; The columns of the server's table NAME, each (NAME TYPE) with the
+; server's own word for the type; nil when it has no such table
+(def sql-server-columns
+  (fn (_ name)
+    (List map (fn (_ row) (list (first row) (List second row)))
+      ((%sql-session get (lit rows)) ((%sql-session get (lit columns)) name)))))
 
 ; Statements go to the server at URL from here on.  Answers its name: the
 ; database at the host, or the host alone.
@@ -184,15 +255,7 @@
   (fn (_ url)
     (let ((at (sql-url-parse url)))
       (sql-disconnect!)
-      (let ((session ((class-static-ref SqlServer (Str8 ->sym (List ref 5 at)))
-                      SqlServer (sql-socket-link (List third at) (List ref 3 at)) at)))
-        (%sql-session set! (lit run) (first session))
-        (%sql-session set! (lit finish) (List second session))
-        (%sql-session set! (lit secure) (List third session))
-        (%sql-session set! (lit name)
-          (if (null? (List ref 4 at)) (List third at)
-            (Str8 append (List ref 4 at) "@" (List third at))))
-        (sql-connection)))))
+      (sql-session! (List ref 5 at) (sql-socket-link (List third at) (List ref 3 at)) at))))
 
 ; Every statement of TEXT run in order: their results, as one text.  What
 ; a statement left behind is swept when it is done: the platform sweeps
@@ -202,7 +265,8 @@
 (def sql-run
   (fn (_ text)
     (if (%sql-session has? (lit run))
-      ((%sql-session get (lit run)) text)
+      (do (when (%sql-session has? (lit listed)) (%sql-session del! (lit listed)))
+          ((%sql-session get (lit run)) text))
       (Str8 join ""
         (List map
           (fn (_ s)
@@ -277,4 +341,5 @@
 (provide sql/base
   sql-version sql-run sql-error-text sql-main sql-url-parse sql-connect! sql-open! sql-operand-file
   sql-disconnect! sql-connection sql-connection-secure? sql-remote-text
+  sql-session! sql-server-tables sql-server-columns
   sql-pg-results)

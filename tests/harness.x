@@ -37,7 +37,7 @@
 (import sql/link SqlLink)
 (import sql/pg pg-start pg-query pg-md5-password pg-scram-bare pg-scram-final)
 (import sql/my my-start my-query my-auth)
-(import sql/base sql-url-parse sql-remote-text sql-pg-results)
+(import sql/base sql-url-parse sql-remote-text sql-pg-results sql-session! sql-disconnect!)
 
 ; A link whose server is the bytes HEX spells, for a case with no server:
 ; each read answers the bytes up to the next / in HEX.  What is sent to it

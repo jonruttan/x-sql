@@ -30,7 +30,7 @@
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
 (import sql/base
   sql-run sql-error-text sql-connect! sql-open! sql-disconnect! sql-connection
-  sql-connection-secure?)
+  sql-connection-secure? sql-server-tables sql-server-columns)
 (import sql/exec sql-table-names sql-table-columns sql-attached sql-opened)
 (import sql/sqlite sql-sqlite-tables sql-sqlite-columns sql-sqlite-view)
 (import sql/eval sql-type-name)
@@ -196,10 +196,16 @@
       (List append
         (List map (fn (_ w) (if lower (sql-lower w) w)) (%sql-language-words))
         sql-aggregates sql-window-functions
-        (sql-table-names)
-        (List flat-map
-          (fn (_ table) (List map first (sql-table-columns table)))
-          (sql-table-names))))))
+        ; With a server the tables are its own; a catalogue it will not
+        ; show offers none.  Its columns are not asked for: that is a
+        ; question a table.
+        (if (not (null? (sql-connection)))
+          (guard (_ ()) (sql-server-tables))
+          (List append
+            (sql-table-names)
+            (List flat-map
+              (fn (_ table) (List map first (sql-table-columns table)))
+              (sql-table-names))))))))
 
 (def %sql-dot-names
   (list ".connect" ".disconnect" ".exit" ".help" ".maxrows" ".open" ".quit" ".schema" ".tables"))
@@ -269,6 +275,19 @@
          (str=? (sql-lower (first db)) (sql-lower (first (sql-opened))))
          (null? (List find (fn (_ own) (str=? (sql-lower own) (sql-lower table)))
                   (sql-table-names))))))
+
+; A table of the server's as the statement that would make it, its types
+; in the server's own words
+(def %sql-server-schema
+  (fn (_ name)
+    (let ((columns (sql-server-columns name)))
+      (when (null? columns)
+        (error (Str8 append "Catalog Error: Table with name " name " does not exist!")))
+      (display (Str8 append "CREATE TABLE " name "("
+                 (Str8 join ", "
+                   (List map (fn (_ c) (Str8 append (first c) " " (List second c))) columns))
+                 ");"))
+      (newline))))
 
 ; The tables of the databases attached, the databases in the order of
 ; their names and each one's tables in theirs.  A table is written as a
@@ -367,18 +386,26 @@
           (sql-max-rows! (first (sql-decimal-read rest-of-line)))
           (do (display "usage: .maxrows N, the most rows of a result that are shown")
               (newline)))))
+    ; With a server, the tables and their columns are the server's
     (method tables (self rest-of-line)
       (List for-each (fn (_ name) (display name) (newline))
-        (List append (sql-table-names) (%sql-attached-tables))))
+        (if (not (null? (sql-connection))) (sql-server-tables)
+          (List append (sql-table-names) (%sql-attached-tables)))))
     (method schema (self rest-of-line)
-      (if (= (Str8 length rest-of-line) 0)
-        (do (List for-each %sql-schema (sql-table-names))
-            (List for-each
-              (fn (_ name) (display (%sql-attached-schema name)) (newline))
-              (%sql-attached-tables)))
-        (let ((attached (%sql-attached-schema rest-of-line)))
-          (if (null? attached) (%sql-schema rest-of-line)
-            (do (display attached) (newline))))))
+      (match
+        ((not (null? (sql-connection)))
+          (if (= (Str8 length rest-of-line) 0)
+            (List for-each %sql-server-schema (sql-server-tables))
+            (%sql-server-schema rest-of-line)))
+        ((= (Str8 length rest-of-line) 0)
+          (do (List for-each %sql-schema (sql-table-names))
+              (List for-each
+                (fn (_ name) (display (%sql-attached-schema name)) (newline))
+                (%sql-attached-tables))))
+        (#t
+          (let ((attached (%sql-attached-schema rest-of-line)))
+            (if (null? attached) (%sql-schema rest-of-line)
+              (do (display attached) (newline)))))))
     (method help (self rest-of-line)
       (if (= (Str8 length rest-of-line) 0) (sql-help-index)
         (let ((topic (sql-help-topic rest-of-line))
