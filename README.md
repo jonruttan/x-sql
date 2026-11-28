@@ -225,8 +225,7 @@ In this order:
 
 1. DuckDB's friendlier forms: a CSV's quote, escape and comment marks;
    Parquet.
-2. The prompt: Tab offering every function's name.
-3. The servers the rest of the way: a certificate authority of one's own for
+2. The servers the rest of the way: a certificate authority of one's own for
    `verify-full`; a password asked for at the prompt; a query cancelled
    with ctrl-c.
 
