@@ -30,7 +30,8 @@
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
 (import sql/base
   sql-run sql-error-text sql-connect! sql-open! sql-disconnect! sql-connection
-  sql-connection-secure? sql-server-tables sql-server-columns)
+  sql-connection-secure? sql-server-tables sql-server-columns
+  sql-server-column-names)
 (import sql/exec sql-table-names sql-table-columns sql-attached sql-opened)
 (import sql/sqlite sql-sqlite-tables sql-sqlite-columns sql-sqlite-view)
 (import sql/eval sql-type-name)
@@ -196,11 +197,11 @@
       (List append
         (List map (fn (_ w) (if lower (sql-lower w) w)) (%sql-language-words))
         sql-aggregates sql-window-functions
-        ; With a server the tables are its own; a catalogue it will not
-        ; show offers none.  Its columns are not asked for: that is a
-        ; question a table.
+        ; With a server the tables and columns are its own; a catalogue
+        ; it will not show offers none.
         (if (not (null? (sql-connection)))
-          (guard (_ ()) (sql-server-tables))
+          (guard (_ ())
+            (List append (sql-server-tables) (sql-server-column-names)))
           (List append
             (sql-table-names)
             (List flat-map

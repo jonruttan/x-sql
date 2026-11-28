@@ -162,27 +162,32 @@
         (List map (fn (_ row) (List map first row)) (List ref rows-at result))))))
 
 ; What a server is asked for its catalogue: the tables a bare name reaches,
-; and a function of a table's name answering the question for its columns,
-; each a name and the server's own word for its type, in the table's order
+; a function of a table's name answering the question for its columns,
+; each a name and the server's own word for its type, in the table's order,
+; and the names of every column of those tables, each once
 (def %sql-pg-tables
   "SELECT table_name FROM information_schema.tables WHERE table_schema = ANY (current_schemas(false)) ORDER BY table_name")
 (def %sql-pg-columns
   (fn (_ table)
     (Str8 append "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = ANY (current_schemas(false)) AND table_name = "
                  (%sql-quoted table) " ORDER BY ordinal_position")))
+(def %sql-pg-names
+  "SELECT DISTINCT column_name FROM information_schema.columns WHERE table_schema = ANY (current_schemas(false)) ORDER BY column_name")
 (def %sql-my-tables
   "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name")
 (def %sql-my-columns
   (fn (_ table)
     (Str8 append "SELECT column_name, column_type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = "
                  (%sql-quoted table) " ORDER BY ordinal_position")))
+(def %sql-my-names
+  "SELECT DISTINCT column_name FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY column_name")
 
 ; A session with a kind of server: a static method named for the URL's
 ; scheme, taking a link and the address, and answering (RUN FINISH SECURE
-; ROWS TABLES COLUMNS): a function of a text that answers its results as
-; text, a function of nothing that ends the session, whether the session is
-; encrypted, a function of a text that answers the rows of its first
-; result, and the two questions of the server's catalogue
+; ROWS TABLES COLUMNS NAMES): a function of a text that answers its results
+; as text, a function of nothing that ends the session, whether the session
+; is encrypted, a function of a text that answers the rows of its first
+; result, and the three questions of the server's catalogue
 (def-class SqlServer ()
   (static
     (method postgres (self link at)
@@ -192,7 +197,7 @@
             (fn (_) (pg-finish link) (link close!))
             (link secure)
             (fn (_ text) (%sql-result-rows (pg-query link text) 2))
-            %sql-pg-tables %sql-pg-columns))
+            %sql-pg-tables %sql-pg-columns %sql-pg-names))
     (method postgresql (self link at) (SqlServer postgres link at))
     (method mysql (self link at)
       (my-start link (first at) (List second at) (List ref 4 at)
@@ -201,7 +206,7 @@
             (fn (_) (my-finish link) (link close!))
             (link secure)
             (fn (_ text) (%sql-result-rows (my-query link text) 3))
-            %sql-my-tables %sql-my-columns))
+            %sql-my-tables %sql-my-columns %sql-my-names))
     (method mariadb (self link at) (SqlServer mysql link at))))
 
 (def sql-disconnect!
@@ -210,7 +215,8 @@
       ((%sql-session get (lit finish))))
     (List for-each (fn (_ key) (%sql-session del! key))
                    (list (lit run) (lit finish) (lit name) (lit secure)
-                         (lit rows) (lit tables) (lit columns) (lit listed)))
+                         (lit rows) (lit tables) (lit columns) (lit names)
+                         (lit listed) (lit named)))
     ()))
 
 ; The session is with the server of KIND, a URL's scheme, reached by LINK
@@ -226,6 +232,7 @@
       (%sql-session set! (lit rows) (List ref 3 session))
       (%sql-session set! (lit tables) (List ref 4 session))
       (%sql-session set! (lit columns) (List ref 5 session))
+      (%sql-session set! (lit names) (List ref 6 session))
       (%sql-session set! (lit name)
         (if (null? (List ref 4 at)) (List third at)
           (Str8 append (List ref 4 at) "@" (List third at))))
@@ -249,6 +256,17 @@
     (List map (fn (_ row) (list (first row) (List second row)))
       ((%sql-session get (lit rows)) ((%sql-session get (lit columns)) name)))))
 
+; The names of the columns of the server's tables, the ones a bare name
+; reaches, each once and in order; nil with no server.  Kept like the
+; tables, until a statement goes to the server.
+(def sql-server-column-names
+  (fn (_)
+    (if (not (%sql-session has? (lit rows))) ()
+      (do (unless (%sql-session has? (lit named))
+            (%sql-session set! (lit named)
+              (List map first ((%sql-session get (lit rows)) (%sql-session get (lit names))))))
+          (%sql-session get (lit named))))))
+
 ; Statements go to the server at URL from here on.  Answers its name: the
 ; database at the host, or the host alone.
 (def sql-connect!
@@ -265,7 +283,9 @@
 (def sql-run
   (fn (_ text)
     (if (%sql-session has? (lit run))
-      (do (when (%sql-session has? (lit listed)) (%sql-session del! (lit listed)))
+      (do (List for-each
+            (fn (_ key) (when (%sql-session has? key) (%sql-session del! key)))
+            (list (lit listed) (lit named)))
           ((%sql-session get (lit run)) text))
       (Str8 join ""
         (List map
@@ -341,5 +361,5 @@
 (provide sql/base
   sql-version sql-run sql-error-text sql-main sql-url-parse sql-connect! sql-open! sql-operand-file
   sql-disconnect! sql-connection sql-connection-secure? sql-remote-text
-  sql-session! sql-server-tables sql-server-columns
+  sql-session! sql-server-tables sql-server-columns sql-server-column-names
   sql-pg-results)
