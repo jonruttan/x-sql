@@ -149,6 +149,17 @@ become.  `SqlLine` is the harness's stand-in for the editor's buffer.
 ("cou" "count")
 ```
 
+### every function's name completes, and its other names
+
+```x
+(%seq (write (sql-complete (new SqlLine text "select list_z"))) (newline) (write (sql-complete (new SqlLine text "from read_cs"))) (newline))
+```
+---
+```output
+("list_z" "list_zip")
+("read_cs" "read_csv" "read_csv_auto")
+```
+
 ### a table and its columns complete, in any case
 
 ```x

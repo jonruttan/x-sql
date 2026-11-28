@@ -24,8 +24,7 @@
 (import x/type/io)
 (import x/core/doors char->int)
 (import sql/words
-  sql-lower sql-reserved sql-words sql-constants sql-type-words sql-aggregates
-  sql-window-functions)
+  sql-lower sql-reserved sql-words sql-constants sql-type-words)
 (import sql/lex sql-lex)
 (import sql/syntax sql-syntax-rules sql-syntax-classes)
 (import sql/base
@@ -38,7 +37,7 @@
 (import sql/render sql-max-rows!)
 (import sql/number sql-decimal-read)
 (import sql/help sql-help-topics sql-help-topic sql-help-show sql-help-index
-  sql-help-function sql-help-function-show)
+  sql-help-functions sql-help-function sql-help-function-show)
 
 ; --- a line's colours --------------------------------------------------------
 
@@ -191,12 +190,18 @@
 
 ; Every name Tab may offer for WORD: the language's words in the case WORD
 ; is typed in, the functions, the tables and their columns
+; Every function's name and its other names, as .help knows them: the
+; functions of a row's values, of a group and of a window, and those read
+; where a table is
+(def %sql-function-words
+  (List flat-map (fn (_ row) (pair (first row) (List ref 4 row))) sql-help-functions))
+
 (def %sql-candidates
   (fn (_ word)
     (let ((lower (str=? word (sql-lower word))))
       (List append
         (List map (fn (_ w) (if lower (sql-lower w) w)) (%sql-language-words))
-        sql-aggregates sql-window-functions
+        %sql-function-words
         ; With a server the tables and columns are its own; a catalogue
         ; it will not show offers none.
         (if (not (null? (sql-connection)))
