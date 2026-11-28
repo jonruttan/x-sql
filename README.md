@@ -227,8 +227,8 @@ In this order:
    Parquet.
 2. The prompt: Tab offering every function's name.
 3. The servers the rest of the way: a certificate authority of one's own for
-   `verify-full`; a password asked for at the prompt; a server's columns
-   in Tab; a query cancelled with ctrl-c.
+   `verify-full`; a password asked for at the prompt; a query cancelled
+   with ctrl-c.
 
 ## Tests
 
