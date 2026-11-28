@@ -15,10 +15,11 @@
 (import x/type/dict)
 (import sql/render sql-render sql-render-table sql-one-line-rows)
 (import x/type/class)
-(import sql/link sql-socket-link)
+(import sql/link sql-socket-link sql-link-text)
 (import sql/pg pg-start pg-query pg-finish pg-type-name pg-type-number?)
 (import sql/my my-start my-query my-finish)
 (import sql/number sql-decimal-read)
+(import x/repl/term)
 
 (def sql-version "0.1.0")
 
@@ -219,24 +220,83 @@
                          (lit listed) (lit named)))
     ()))
 
+; Whether a session failed, with the text E says, because the server wants
+; a password and none was given: Postgres asks for one, MySQL refuses the
+; empty one it is sent
+(def %sql-wants-password?
+  (fn (_ text)
+    (or (Str8 includes? "the server asks for a password and none was given" text)
+        (Str8 includes? "ERROR 1045" text))))
+
 ; The session is with the server of KIND, a URL's scheme, reached by LINK
 ; at the address AT, as sql-url-parse answers one.  Answers its name: the
-; database at the host, or the host alone.
+; database at the host, or the host alone.  With RELINK and ASK, a server
+; that wants a password when AT has none is asked again once: LINK is
+; closed, ASK, a function of AT, answers the password or nil for none, and
+; RELINK, a function of nothing, a new link to the server.
 (def sql-session!
-  (fn (_ kind link at)
+  (fn (self kind link at . again)
     (sql-disconnect!)
-    (let ((session ((class-static-ref SqlServer (Str8 ->sym kind)) SqlServer link at)))
-      (%sql-session set! (lit run) (first session))
-      (%sql-session set! (lit finish) (List second session))
-      (%sql-session set! (lit secure) (List third session))
-      (%sql-session set! (lit rows) (List ref 3 session))
-      (%sql-session set! (lit tables) (List ref 4 session))
-      (%sql-session set! (lit columns) (List ref 5 session))
-      (%sql-session set! (lit names) (List ref 6 session))
-      (%sql-session set! (lit name)
-        (if (null? (List ref 4 at)) (List third at)
-          (Str8 append (List ref 4 at) "@" (List third at))))
-      (sql-connection))))
+    (let ((tried (guard (e (pair (lit failed) (Str8 str e)))
+                   (pair (lit started)
+                         ((class-static-ref SqlServer (Str8 ->sym kind)) SqlServer link at)))))
+      (if (eq? (first tried) (lit started))
+        (let ((session (rest tried)))
+          (%sql-session set! (lit run) (first session))
+          (%sql-session set! (lit finish) (List second session))
+          (%sql-session set! (lit secure) (List third session))
+          (%sql-session set! (lit rows) (List ref 3 session))
+          (%sql-session set! (lit tables) (List ref 4 session))
+          (%sql-session set! (lit columns) (List ref 5 session))
+          (%sql-session set! (lit names) (List ref 6 session))
+          (%sql-session set! (lit name)
+            (if (null? (List ref 4 at)) (List third at)
+              (Str8 append (List ref 4 at) "@" (List third at))))
+          (sql-connection))
+        (let ((password (if (or (null? again) (not (null? (List second at)))
+                                (not (%sql-wants-password? (rest tried))))
+                          ()
+                          (do (link close!) ((List second again) at)))))
+          (if (null? password) (error (rest tried))
+            (self kind ((first again)) (pair (first at) (pair password (rest (rest at)))))))))))
+
+; A password typed at the terminal for the user and host of AT, not shown
+; as it is typed: Enter ends it, Backspace takes back a character, and
+; ctrl-c, or ctrl-d on nothing typed, answers nil.  Nil when standard input
+; is not a terminal.
+(def %sql-password-read
+  (fn (_ at)
+    (let ((saved (Term raw! 0)))
+      (if (null? saved) ()
+        (let ((typed (guard (e (pair (lit failed) (Str8 str e)))
+                       (do (Term emit 1 (Str8 append "Password for " (first at) "@" (List third at) ": "))
+                           (pair (lit read) (%sql-password-keys ()))))))
+          (Term restore! 0 saved)
+          (Term emit 1 "\r\n")
+          (when (eq? (first typed) (lit failed)) (error (rest typed)))
+          (rest typed))))))
+
+; The bytes of a UTF-8 character's tail
+(def %sql-continuation? (fn (_ b) (and (> b 127) (< b 192))))
+
+; HELD, the bytes typed so far newest first, without its last character
+(def %sql-unkeyed
+  (fn (_ held)
+    (if (null? held) ()
+      (rest (List drop-while %sql-continuation? held)))))
+
+; The rest of a password read from standard input, HELD the bytes typed so
+; far newest first: as a text, or nil when it is given up
+(def %sql-password-keys
+  (fn (self held)
+    (let ((got (Sys fd-read 0 1)))
+      (let ((b (if (null? got) 4 (first got))))
+        (match
+          ((or (= b 13) (= b 10)) (sql-link-text (Bytes of-list (List reverse held))))
+          ((= b 3) ())
+          ((= b 4) (if (null? held) () (self held)))
+          ((or (= b 127) (= b 8)) (self (%sql-unkeyed held)))
+          (#t (self (pair b held))))))))
 
 ; The server's tables, the ones a bare name reaches, in the order of
 ; their names; nil with no server.  The server is asked once and the
@@ -273,7 +333,8 @@
   (fn (_ url)
     (let ((at (sql-url-parse url)))
       (sql-disconnect!)
-      (sql-session! (List ref 5 at) (sql-socket-link (List third at) (List ref 3 at)) at))))
+      (let ((relink (fn (_) (sql-socket-link (List third at) (List ref 3 at)))))
+        (sql-session! (List ref 5 at) (relink) at relink %sql-password-read)))))
 
 ; Every statement of TEXT run in order: their results, as one text.  What
 ; a statement left behind is swept when it is done: the platform sweeps
