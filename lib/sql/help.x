@@ -266,6 +266,8 @@
             "the password is PGPASSWORD, the port 5432 and the database the"
             "user's name; for MySQL and MariaDB the password is MYSQL_PWD,"
             "the port 3306 and there is no database unless one is written."
+            "When neither gives a password and the server wants one, it is"
+            "asked for at the terminal, and not shown as it is typed."
             "Once connected a statement is the server's to read: its SQL, its"
             "types, its errors.  .tables, .schema and Tab's tables and"
             "columns are the server's too: the tables a bare name reaches,"
